@@ -2,6 +2,34 @@
 
 Inventory-risk protection hook for Uniswap v4 stable pools.
 
+/\*
+
+- ╔══════════════════════════════════════════════════════════════════╗
+- ║ OscillonHook.sol v2.0 — Multi-Pool ║
+- ║ ║
+- ║ ARCHITECTURE CHANGE vs v1.x: ║
+- ║ v1: immutable ORACLE0/ORACLE1/STABLE0/STABLE1 ║
+- ║ → hardcoded to ONE pool forever at deploy ║
+- ║ ║
+- ║ v2: mapping(PoolId => PoolConfig) ║
+- ║ → owner calls registerPool() for each stable pair ║
+- ║ → supports USDC/USDT, USDC/DAI, USDT/DAI, ║
+- ║ USDC/crvUSD, any stable pair with Chainlink feeds ║
+- ║ ║
+- ║ FREEZE REMOVED: ║
+- ║ v1: severe depeg → revert PoolFrozen() → pool bricked ║
+- ║ v2: severe depeg → fee capped at MAX_FEE_PIPS (50 bps) ║
+- ║ swaps still flow, LPs still protected, nothing breaks ║
+- ║ ║
+- ║ Supported pools (register after deploy): ║
+- ║ • USDC / USDT ║
+- ║ • USDC / DAI ║
+- ║ • USDT / DAI ║
+- ║ • USDC / crvUSD ║
+- ║ • any stable pair with a Chainlink USD feed ║
+- ╚══════════════════════════════════════════════════════════════════╝
+  \*/
+
 ## Overview
 
 `OscillonHook` is a `beforeSwap` hook that protects LP inventory during stablecoin depeg events.

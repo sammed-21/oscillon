@@ -1,5 +1,1 @@
-TestOscillonHook:test_beforeSwap_AppliesPolicyLadder_WhenUSDCDepegs() (gas: 433433)
-TestOscillonHook:test_beforeSwap_AppliesPolicyLadder_WhenUSDTDepegs() (gas: 426490)
-TestOscillonHook:test_beforeSwap_Reverts_WhenCallerIsNotPoolManager() (gas: 16056)
-TestOscillonHook:test_beforeSwap_Reverts_WhenExactOutputExceedsDeepDepegCap() (gas: 94780)
-TestOscillonHook:test_beforeSwap_Reverts_WhenInputStableIsAbovePegByFreezeThreshold() (gas: 74754)
+OscillonHookBasicTest:test_swap_WhenStableDropsTo089_UsesMaxFee() (gas: 278293)
