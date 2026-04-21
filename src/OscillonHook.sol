@@ -14,7 +14,6 @@ import {
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {IAggregatorV3Interface} from "./interface/IAggregatorV3Interface.sol";
-import {console2} from "forge-std/console2.sol";
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -280,7 +279,6 @@ contract OscillonHook is BaseHook {
     ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
         PoolId id = key.toId();
         PoolConfig storage cfg = poolConfigs[id];
-        console2.log("registered", cfg.registered);
 
         // ── 1. Unregistered pool → pass through at base fee
         if (!cfg.registered) {
@@ -290,7 +288,6 @@ contract OscillonHook is BaseHook {
                 BASE_FEE_PIPS | LPFeeLibrary.OVERRIDE_FEE_FLAG
             );
         }
-        console2.log("hi");
         SwapContext memory ctx = _buildSwapContext(cfg, params);
 
         uint24 fee = _selectFee(cfg, ctx);
@@ -313,7 +310,6 @@ contract OscillonHook is BaseHook {
         // zeroForOne = false -> tokenIn is token1
         bool tokenInIsToken0 = params.zeroForOne;
         address tokenIn = tokenInIsToken0 ? cfg.token0 : cfg.token1;
-        console2.log(tokenIn);
         if (tokenIn != cfg.token0 && tokenIn != cfg.token1) {
             revert UnsupportedToken(tokenIn);
         }
@@ -323,12 +319,9 @@ contract OscillonHook is BaseHook {
             ? cfg.oracle0Decimals
             : cfg.oracle1Decimals;
         (uint256 depegBps, bool pegBelow) = _readDepeg(oracleAddr, oracleDec);
-        console2.log("depegBps", depegBps);
-        console2.log("pegBelow", pegBelow);
         uint256 swapSize = params.amountSpecified < 0
             ? uint256(-params.amountSpecified)
             : uint256(params.amountSpecified);
-        console2.log(swapSize);
         ctx = SwapContext({
             depegBps: depegBps,
             isDrain: pegBelow,
@@ -368,11 +361,7 @@ contract OscillonHook is BaseHook {
         // ── Restore window check ──────────────────────────────────────────────
         bool inRestoreWindow = cfg.lastHighDepegAt != 0 &&
             (block.timestamp - cfg.lastHighDepegAt) <= RESTORE_WINDOW;
-        console2.log(inRestoreWindow);
-        console2.log(ctx.depegBps < SMALL_DEPEG_BPS);
         // ── Healthy pool — no depeg ───────────────────────────────────────────
-        console2.log(ctx.depegBps);
-        console2.log(SMALL_DEPEG_BPS);
         if (ctx.depegBps < SMALL_DEPEG_BPS) {
             // If we are in the restore window (recently resolved depeg)
             // and this is a restore-direction swap → discount
@@ -390,7 +379,6 @@ contract OscillonHook is BaseHook {
         // Even during an active depeg, swaps going the "right" direction
         // (buying the depegged token) get the restore discount.
         // This attracts aggregator flow and helps pool rebalance naturally.
-        console2.log("isDrain", ctx.isDrain);
         if (!ctx.isDrain) {
             return RESTORE_FEE_PIPS;
         }
@@ -401,10 +389,7 @@ contract OscillonHook is BaseHook {
         // Instead: fee hits MAX_FEE_PIPS (50 bps) and stays there.
         // Pool keeps running. Arb is expensive but not impossible.
         // LPs protected by high cost. No permanently bricked pools.
-        console2.log("ctx.depegBps", ctx.depegBps);
-        console2.log("SEVERE_DEPEG_BPS", SEVERE_DEPEG_BPS);
-        console2.log("DRAIN_DEPEG_BPS", DRAIN_DEPEG_BPS);
-        console2.log("SMALL_DEPEG_BPS", SMALL_DEPEG_BPS);
+
         if (ctx.depegBps >= SEVERE_DEPEG_BPS) {
             fee = MAX_FEE_PIPS; // 50 bps — severe depeg cap
         } else if (ctx.depegBps >= DRAIN_DEPEG_BPS) {
@@ -412,7 +397,6 @@ contract OscillonHook is BaseHook {
         } else {
             fee = SMALL_FEE_PIPS; // 8 bps
         }
-        console2.log("fee", fee);
 
         // ── Large swap cap during drain ───────────────────────────────────────
         // Only applies to exact-in swaps above the size threshold.
@@ -429,10 +413,7 @@ contract OscillonHook is BaseHook {
                 "Oscillon: drain swap exceeds size limit"
             );
         }
-        console2.log("maxSwap", maxSwap);
         // Accrue surplus for LP redistribution
-        console2.log("fee", fee);
-        console2.log("BASE_FEE_PIPS", BASE_FEE_PIPS);
         if (fee > BASE_FEE_PIPS) {
             uint256 surplusBps = uint256(fee / 100) - 1; // surplus above 1 bps
             uint256 surplusAmount = (ctx.swapSize * surplusBps) / 10_000;
@@ -467,17 +448,13 @@ contract OscillonHook is BaseHook {
 
         // Normalise to 1e18. $1.0000 = 1e18.
 
-        console2.log("oracleDec", oracleDec);
         /**
          *  0.89 / 18
          */
-        console2.log("oracle", answer);
         uint256 price1e18 = (uint256(answer) * 1e18) /
             (10 ** uint256(oracleDec));
 
-        console2.log("price1e18", price1e18);
         pegBelow = price1e18 < 1e18;
-        console2.log(pegBelow);
         depegBps = pegBelow
             ? ((1e18 - price1e18) * 10_000) / 1e18
             : ((price1e18 - 1e18) * 10_000) / 1e18;
