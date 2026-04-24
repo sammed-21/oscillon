@@ -58,6 +58,11 @@ contract OscillonHook is BaseHook {
         address indexed newOwner
     );
 
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
     // ── Governance ───────────────────────────────────────────────────────────
 
     address public owner;
@@ -77,7 +82,7 @@ contract OscillonHook is BaseHook {
     // ── Depeg thresholds (bps) ────────────────────────────────────────────────
 
     uint256 public constant SMALL_DEPEG_BPS = 7;
-    uint256 public constant DRAIN_DEPEG_BPS = 20;
+    uint256 public constant DRAIN_DEPEG_BPS = 25;
 
     /// @notice v2: no freeze at this threshold — fee just hits MAX_FEE_PIPS.
     uint256 public constant SEVERE_DEPEG_BPS = 50;
@@ -362,6 +367,7 @@ contract OscillonHook is BaseHook {
         bool inRestoreWindow = cfg.lastHighDepegAt != 0 &&
             (block.timestamp - cfg.lastHighDepegAt) <= RESTORE_WINDOW;
         // ── Healthy pool — no depeg ───────────────────────────────────────────
+
         if (ctx.depegBps < SMALL_DEPEG_BPS) {
             // If we are in the restore window (recently resolved depeg)
             // and this is a restore-direction swap → discount
@@ -379,6 +385,7 @@ contract OscillonHook is BaseHook {
         // Even during an active depeg, swaps going the "right" direction
         // (buying the depegged token) get the restore discount.
         // This attracts aggregator flow and helps pool rebalance naturally.
+
         if (!ctx.isDrain) {
             return RESTORE_FEE_PIPS;
         }
@@ -389,7 +396,6 @@ contract OscillonHook is BaseHook {
         // Instead: fee hits MAX_FEE_PIPS (50 bps) and stays there.
         // Pool keeps running. Arb is expensive but not impossible.
         // LPs protected by high cost. No permanently bricked pools.
-
         if (ctx.depegBps >= SEVERE_DEPEG_BPS) {
             fee = MAX_FEE_PIPS; // 50 bps — severe depeg cap
         } else if (ctx.depegBps >= DRAIN_DEPEG_BPS) {
@@ -507,10 +513,5 @@ contract OscillonHook is BaseHook {
         if (newOwner == address(0)) revert ZeroAddress();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
-    }
-
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
     }
 }
