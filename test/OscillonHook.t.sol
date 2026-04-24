@@ -117,7 +117,7 @@ contract OscillonHookBasicTest is Test, Deployers {
 
     function test_swap_WhenStableDropsTo089_UsesMaxFee() public {
         // Depeg stable1 from $1.00 -> $0.89 (11% depeg = 1100 bps).
-        oracle1.updateAnswer(890000000000000000);
+        oracle1.updateAnswer(990000000000000000);
 
         bool stable1IsCurrency0 = Currency.unwrap(poolKey.currency0) ==
             address(stable1);
@@ -127,7 +127,7 @@ contract OscillonHookBasicTest is Test, Deployers {
             : (TickMath.MAX_SQRT_PRICE - 1);
 
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolKey.toId(), 1100, MAX_FEE_PIPS, AMOUNT_IN, true);
+        emit DepegDetected(poolKey.toId(), 100, MAX_FEE_PIPS, AMOUNT_IN, true);
 
         swapRouter.swap(
             poolKey,
