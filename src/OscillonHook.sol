@@ -7,10 +7,7 @@ import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
-import {
-    BeforeSwapDelta,
-    BeforeSwapDeltaLibrary
-} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {IAggregatorV3Interface} from "./interface/IAggregatorV3Interface.sol";
@@ -33,30 +30,15 @@ contract OscillonHook is BaseHook {
     // ── Events ───────────────────────────────────────────────────────────────
 
     /// @notice Emitted on every swap — useful for dashboard indexing.
-    event DepegDetected(
-        PoolId indexed poolId,
-        uint256 depegBps,
-        uint24 feeApplied,
-        uint256 swapSize,
-        bool isDrain
-    );
+    event DepegDetected(PoolId indexed poolId, uint256 depegBps, uint24 feeApplied, uint256 swapSize, bool isDrain);
 
     /// @notice Emitted when owner registers a new stable pool.
-    event PoolRegistered(
-        PoolId indexed poolId,
-        address token0,
-        address token1,
-        address oracle0,
-        address oracle1
-    );
+    event PoolRegistered(PoolId indexed poolId, address token0, address token1, address oracle0, address oracle1);
 
     /// @notice Emitted when pool config is updated (oracle change etc).
     event PoolUpdated(PoolId indexed poolId);
 
-    event OwnershipTransferred(
-        address indexed oldOwner,
-        address indexed newOwner
-    );
+    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -78,7 +60,7 @@ contract OscillonHook is BaseHook {
     /// Severe depeg → fee capped here instead of freezing.
     /// Pool keeps running. LPs still protected by high cost of arb.
     uint24 public constant MAX_FEE_PIPS = 5000; // 50 bps  — severe depeg cap
-
+    
     // ── Depeg thresholds (bps) ────────────────────────────────────────────────
 
     uint256 public constant SMALL_DEPEG_BPS = 7;
@@ -146,29 +128,23 @@ contract OscillonHook is BaseHook {
 
     // ── Hook permissions ──────────────────────────────────────────────────────
 
-    function getHookPermissions()
-        public
-        pure
-        override
-        returns (Hooks.Permissions memory)
-    {
-        return
-            Hooks.Permissions({
-                beforeInitialize: false,
-                afterInitialize: false,
-                beforeAddLiquidity: false,
-                afterAddLiquidity: false,
-                beforeRemoveLiquidity: false,
-                afterRemoveLiquidity: false,
-                beforeSwap: true,
-                afterSwap: false,
-                beforeDonate: false,
-                afterDonate: false,
-                beforeSwapReturnDelta: false,
-                afterSwapReturnDelta: false,
-                afterAddLiquidityReturnDelta: false,
-                afterRemoveLiquidityReturnDelta: false
-            });
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
+            beforeInitialize: false,
+            afterInitialize: false,
+            beforeAddLiquidity: false,
+            afterAddLiquidity: false,
+            beforeRemoveLiquidity: false,
+            afterRemoveLiquidity: false,
+            beforeSwap: true,
+            afterSwap: false,
+            beforeDonate: false,
+            afterDonate: false,
+            beforeSwapReturnDelta: false,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
+        });
     }
 
     // ── Pool registration ─────────────────────────────────────────────────────
@@ -197,8 +173,9 @@ contract OscillonHook is BaseHook {
         uint8 stableDecimals0,
         uint8 stableDecimals1
     ) external onlyOwner {
-        if (oracle0 == address(0) || oracle1 == address(0))
+        if (oracle0 == address(0) || oracle1 == address(0)) {
             revert ZeroAddress();
+        }
 
         address t0 = Currency.unwrap(key.currency0);
         address t1 = Currency.unwrap(key.currency1);
@@ -219,10 +196,8 @@ contract OscillonHook is BaseHook {
             oracle1: oracle1,
             oracle0Decimals: dec0,
             oracle1Decimals: dec1,
-            maxDepegSwap0: MAX_DEPEG_SWAP_FACTOR *
-                (10 ** uint256(stableDecimals0)),
-            maxDepegSwap1: MAX_DEPEG_SWAP_FACTOR *
-                (10 ** uint256(stableDecimals1)),
+            maxDepegSwap0: MAX_DEPEG_SWAP_FACTOR * (10 ** uint256(stableDecimals0)),
+            maxDepegSwap1: MAX_DEPEG_SWAP_FACTOR * (10 ** uint256(stableDecimals1)),
             lastHighDepegAt: 0,
             surplusAccrued: 0
         });
@@ -232,23 +207,14 @@ contract OscillonHook is BaseHook {
 
     /// @notice Update oracle addresses for a registered pool.
     ///         Use if Chainlink deprecates a feed.
-    function updatePoolOracles(
-        PoolKey calldata key,
-        address newOracle0,
-        address newOracle1
-    ) external onlyOwner {
-        require(
-            IAggregatorV3Interface(newOracle0).decimals() > 0,
-            "Invalid oracle"
-        );
-        require(
-            IAggregatorV3Interface(newOracle1).decimals() > 0,
-            "Invalid oracle"
-        );
+    function updatePoolOracles(PoolKey calldata key, address newOracle0, address newOracle1) external onlyOwner {
+        require(IAggregatorV3Interface(newOracle0).decimals() > 0, "Invalid oracle");
+        require(IAggregatorV3Interface(newOracle1).decimals() > 0, "Invalid oracle");
         PoolId id = key.toId();
         if (!poolConfigs[id].registered) revert PoolNotRegistered();
-        if (newOracle0 == address(0) || newOracle1 == address(0))
+        if (newOracle0 == address(0) || newOracle1 == address(0)) {
             revert ZeroAddress();
+        }
 
         PoolConfig storage cfg = poolConfigs[id];
 
@@ -276,12 +242,11 @@ contract OscillonHook is BaseHook {
     ///   If _beforeSwap is called for a pool that isn't registered,
     ///   we return BASE_FEE silently — the hook gracefully does nothing.
     ///   This prevents reverts on any pool that happens to use this hook address.
-    function _beforeSwap(
-        address,
-        PoolKey calldata key,
-        SwapParams calldata params,
-        bytes calldata
-    ) internal override returns (bytes4, BeforeSwapDelta, uint24) {
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
+        internal
+        override
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
         PoolId id = key.toId();
         PoolConfig storage cfg = poolConfigs[id];
 
@@ -300,17 +265,14 @@ contract OscillonHook is BaseHook {
         emit DepegDetected(id, ctx.depegBps, fee, ctx.swapSize, ctx.isDrain);
 
         // ── 7. Return fee with OVERRIDE_FEE_FLAG
-        return (
-            this.beforeSwap.selector,
-            BeforeSwapDeltaLibrary.ZERO_DELTA,
-            fee | LPFeeLibrary.OVERRIDE_FEE_FLAG
-        );
+        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee | LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
 
-    function _buildSwapContext(
-        PoolConfig storage cfg,
-        SwapParams calldata params
-    ) internal view returns (SwapContext memory ctx) {
+    function _buildSwapContext(PoolConfig storage cfg, SwapParams calldata params)
+        internal
+        view
+        returns (SwapContext memory ctx)
+    {
         // zeroForOne = true  -> tokenIn is token0
         // zeroForOne = false -> tokenIn is token1
         bool tokenInIsToken0 = params.zeroForOne;
@@ -320,13 +282,10 @@ contract OscillonHook is BaseHook {
         }
 
         address oracleAddr = tokenInIsToken0 ? cfg.oracle0 : cfg.oracle1;
-        uint8 oracleDec = tokenInIsToken0
-            ? cfg.oracle0Decimals
-            : cfg.oracle1Decimals;
+        uint8 oracleDec = tokenInIsToken0 ? cfg.oracle0Decimals : cfg.oracle1Decimals;
         (uint256 depegBps, bool pegBelow) = _readDepeg(oracleAddr, oracleDec);
-        uint256 swapSize = params.amountSpecified < 0
-            ? uint256(-params.amountSpecified)
-            : uint256(params.amountSpecified);
+        uint256 swapSize =
+            params.amountSpecified < 0 ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
         ctx = SwapContext({
             depegBps: depegBps,
             isDrain: pegBelow,
@@ -359,13 +318,9 @@ contract OscillonHook is BaseHook {
     ///     → additional swap size cap applied
 
     // test this each line
-    function _selectFee(
-        PoolConfig storage cfg,
-        SwapContext memory ctx
-    ) internal returns (uint24 fee) {
+    function _selectFee(PoolConfig storage cfg, SwapContext memory ctx) internal returns (uint24 fee) {
         // ── Restore window check ──────────────────────────────────────────────
-        bool inRestoreWindow = cfg.lastHighDepegAt != 0 &&
-            (block.timestamp - cfg.lastHighDepegAt) <= RESTORE_WINDOW;
+        bool inRestoreWindow = cfg.lastHighDepegAt != 0 && (block.timestamp - cfg.lastHighDepegAt) <= RESTORE_WINDOW;
         // ── Healthy pool — no depeg ───────────────────────────────────────────
 
         if (ctx.depegBps < SMALL_DEPEG_BPS) {
@@ -407,17 +362,12 @@ contract OscillonHook is BaseHook {
         // ── Large swap cap during drain ───────────────────────────────────────
         // Only applies to exact-in swaps above the size threshold.
         // Retail swaps (<$50k) never hit this.
-        uint256 maxSwap = ctx.tokenInIsToken0
-            ? cfg.maxDepegSwap0
-            : cfg.maxDepegSwap1;
+        uint256 maxSwap = ctx.tokenInIsToken0 ? cfg.maxDepegSwap0 : cfg.maxDepegSwap1;
         if (ctx.amountSpecified < 0 && ctx.swapSize > maxSwap) {
             // Cap the swap size — excess reverts
             // In production this uses BeforeSwapDelta to limit input
             // For MVP: simple require
-            require(
-                ctx.swapSize <= maxSwap,
-                "Oscillon: drain swap exceeds size limit"
-            );
+            require(ctx.swapSize <= maxSwap, "Oscillon: drain swap exceeds size limit");
         }
         // Accrue surplus for LP redistribution
         if (fee > BASE_FEE_PIPS) {
@@ -434,45 +384,34 @@ contract OscillonHook is BaseHook {
     /// @notice Reads a Chainlink feed and returns deviation from $1 peg.
     /// @return depegBps  Deviation in basis points
     /// @return pegBelow  True if token is trading below $1
-    function _readDepeg(
-        address oracleAddr,
-        uint8 oracleDec
-    ) internal view returns (uint256 depegBps, bool pegBelow) {
-        (
-            uint80 roundId,
-            int256 answer,
-            ,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        ) = IAggregatorV3Interface(oracleAddr).latestRoundData();
+    function _readDepeg(address oracleAddr, uint8 oracleDec) internal view returns (uint256 depegBps, bool pegBelow) {
+        (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredInRound) =
+            IAggregatorV3Interface(oracleAddr).latestRoundData();
 
         if (answer <= 0) revert OracleAnswerInvalid();
-        if (answeredInRound < roundId)
+        if (answeredInRound < roundId) {
             revert OracleRoundIncomplete(roundId, answeredInRound);
-        if (block.timestamp > updatedAt + MAX_ORACLE_AGE)
+        }
+        if (block.timestamp > updatedAt + MAX_ORACLE_AGE) {
             revert OracleStale(updatedAt, block.timestamp);
+        }
 
         // Normalise to 1e18. $1.0000 = 1e18.
 
         /**
          *  0.89 / 18
          */
-        uint256 price1e18 = (uint256(answer) * 1e18) /
-            (10 ** uint256(oracleDec));
+        uint256 price1e18 = (uint256(answer) * 1e18) / (10 ** uint256(oracleDec));
 
         pegBelow = price1e18 < 1e18;
-        depegBps = pegBelow
-            ? ((1e18 - price1e18) * 10_000) / 1e18
-            : ((price1e18 - 1e18) * 10_000) / 1e18;
+        depegBps = pegBelow ? ((1e18 - price1e18) * 10_000) / 1e18 : ((price1e18 - 1e18) * 10_000) / 1e18;
     }
 
     // ── View helpers ──────────────────────────────────────────────────────────
 
     /// @notice Read the current state of any registered pool.
     ///         Used by the Oscillon dashboard.
-    function getPoolState(
-        PoolKey calldata key
-    )
+    function getPoolState(PoolKey calldata key)
         external
         view
         returns (
@@ -490,9 +429,7 @@ contract OscillonHook is BaseHook {
 
         registered = cfg.registered;
         surplusAccrued = cfg.surplusAccrued;
-        inRestoreWindow =
-            cfg.lastHighDepegAt != 0 &&
-            (block.timestamp - cfg.lastHighDepegAt) <= RESTORE_WINDOW;
+        inRestoreWindow = cfg.lastHighDepegAt != 0 && (block.timestamp - cfg.lastHighDepegAt) <= RESTORE_WINDOW;
 
         if (!cfg.registered) return (false, 0, false, 0, false, false, 0);
 
@@ -501,9 +438,7 @@ contract OscillonHook is BaseHook {
     }
 
     /// @notice Returns all config for a pool — useful for integrators.
-    function getPoolConfig(
-        PoolKey calldata key
-    ) external view returns (PoolConfig memory) {
+    function getPoolConfig(PoolKey calldata key) external view returns (PoolConfig memory) {
         return poolConfigs[key.toId()];
     }
 

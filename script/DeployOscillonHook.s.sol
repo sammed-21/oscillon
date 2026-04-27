@@ -23,12 +23,10 @@ import {OscillonHook} from "../src/OscillonHook.sol";
 
 contract DeployOscillonHookScript is Script {
     // Foundry deterministic CREATE2 deployer proxy
-    address constant CREATE2_DEPLOYER =
-        0x4e59b44847b379578588920cA78FbF26c0B4956C;
+    address constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
     // Arbitrum v4 PoolManager from Uniswap v4 deployments
-    address constant ARBITRUM_POOL_MANAGER =
-        0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32;
+    address constant ARBITRUM_POOL_MANAGER = 0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32;
 
     // Stablecoins
     address constant USDC = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
@@ -43,10 +41,7 @@ contract DeployOscillonHookScript is Script {
     address constant CL_CRVUSD_USD = 0x0a32255dd4BB6177C994bAAc73E0606fDD568f66;
 
     function run() external {
-        address poolManager = vm.envOr(
-            "POOL_MANAGER",
-            ARBITRUM_POOL_MANAGER
-        );
+        address poolManager = vm.envOr("POOL_MANAGER", ARBITRUM_POOL_MANAGER);
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
 
@@ -55,60 +50,19 @@ contract DeployOscillonHookScript is Script {
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG);
 
         (address hookAddr, bytes32 salt) = HookMiner.find(
-            CREATE2_DEPLOYER,
-            flags,
-            type(OscillonHook).creationCode,
-            abi.encode(IPoolManager(poolManager))
+            CREATE2_DEPLOYER, flags, type(OscillonHook).creationCode, abi.encode(IPoolManager(poolManager))
         );
 
-        OscillonHook hook = new OscillonHook{salt: salt}(
-            IPoolManager(poolManager)
-        );
+        OscillonHook hook = new OscillonHook{salt: salt}(IPoolManager(poolManager));
 
         require(address(hook) == hookAddr, "Hook address mismatch");
         console2.log("OscillonHook deployed at:", address(hook));
         console2.log("PoolManager:", poolManager);
 
-        _registerSortedPool(
-            hook,
-            USDC,
-            USDT,
-            CL_USDC_USD,
-            CL_USDT_USD,
-            6,
-            6,
-            "USDC/USDT"
-        );
-        _registerSortedPool(
-            hook,
-            USDC,
-            DAI,
-            CL_USDC_USD,
-            CL_DAI_USD,
-            6,
-            18,
-            "USDC/DAI"
-        );
-        _registerSortedPool(
-            hook,
-            USDT,
-            DAI,
-            CL_USDT_USD,
-            CL_DAI_USD,
-            6,
-            18,
-            "USDT/DAI"
-        );
-        _registerSortedPool(
-            hook,
-            USDC,
-            CRVUSD,
-            CL_USDC_USD,
-            CL_CRVUSD_USD,
-            6,
-            18,
-            "USDC/crvUSD"
-        );
+        _registerSortedPool(hook, USDC, USDT, CL_USDC_USD, CL_USDT_USD, 6, 6, "USDC/USDT");
+        _registerSortedPool(hook, USDC, DAI, CL_USDC_USD, CL_DAI_USD, 6, 18, "USDC/DAI");
+        _registerSortedPool(hook, USDT, DAI, CL_USDT_USD, CL_DAI_USD, 6, 18, "USDT/DAI");
+        _registerSortedPool(hook, USDC, CRVUSD, CL_USDC_USD, CL_CRVUSD_USD, 6, 18, "USDC/crvUSD");
 
         vm.stopBroadcast();
 
