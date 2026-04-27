@@ -22,13 +22,7 @@ import {console} from "forge-std/console.sol";
 contract OscillonHookBasicTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
 
-    event DepegDetected(
-        PoolId indexed poolId,
-        uint256 depegBps,
-        uint24 feeApplied,
-        uint256 swapSize,
-        bool isDrain
-    );
+    event DepegDetected(PoolId indexed poolId, uint256 depegBps, uint24 feeApplied, uint256 swapSize, bool isDrain);
 
     uint256 constant AMOUNT_IN = 1e15;
     uint24 constant MAX_FEE_PIPS = 5000; // severe depeg fee cap in hook
@@ -72,19 +66,9 @@ contract OscillonHookBasicTest is Test, Deployers {
         }
         console.log(Currency.unwrap(c0), Currency.unwrap(c1));
 
-        (poolKey, ) = initPool(
-            c0,
-            c1,
-            IHooks(address(hook)),
-            LPFeeLibrary.DYNAMIC_FEE_FLAG,
-            SQRT_PRICE_1_1
-        );
+        (poolKey,) = initPool(c0, c1, IHooks(address(hook)), LPFeeLibrary.DYNAMIC_FEE_FLAG, SQRT_PRICE_1_1);
 
-        modifyLiquidityRouter.modifyLiquidity(
-            poolKey,
-            LIQUIDITY_PARAMS,
-            ZERO_BYTES
-        );
+        modifyLiquidityRouter.modifyLiquidity(poolKey, LIQUIDITY_PARAMS, ZERO_BYTES);
 
         // Register pool using oracle order that matches currency0/currency1.
         address oracleForCurrency0;
@@ -98,7 +82,7 @@ contract OscillonHookBasicTest is Test, Deployers {
         }
 
         // Use low-level call to avoid PoolKey type conflicts between remapped deps.
-        (bool ok, ) = address(hook).call(
+        (bool ok,) = address(hook).call(
             abi.encodeWithSignature(
                 "registerPool((address,address,uint24,int24,address),address,address,uint8,uint8)",
                 Currency.unwrap(poolKey.currency0),
@@ -119,12 +103,9 @@ contract OscillonHookBasicTest is Test, Deployers {
         // Depeg stable1 from $1.00 -> $0.89 (11% depeg = 1100 bps).
         oracle1.updateAnswer(990000000000000000);
 
-        bool stable1IsCurrency0 = Currency.unwrap(poolKey.currency0) ==
-            address(stable1);
+        bool stable1IsCurrency0 = Currency.unwrap(poolKey.currency0) == address(stable1);
         bool zeroForOne = stable1IsCurrency0; // sell stable1 into pool
-        uint160 sqrtPriceLimitX96 = zeroForOne
-            ? (TickMath.MIN_SQRT_PRICE + 1)
-            : (TickMath.MAX_SQRT_PRICE - 1);
+        uint160 sqrtPriceLimitX96 = zeroForOne ? (TickMath.MIN_SQRT_PRICE + 1) : (TickMath.MAX_SQRT_PRICE - 1);
 
         vm.expectEmit(true, false, false, true, address(hook));
         emit DepegDetected(poolKey.toId(), 100, MAX_FEE_PIPS, AMOUNT_IN, true);
@@ -136,10 +117,7 @@ contract OscillonHookBasicTest is Test, Deployers {
                 amountSpecified: -int256(AMOUNT_IN),
                 sqrtPriceLimitX96: sqrtPriceLimitX96
             }),
-            PoolSwapTest.TestSettings({
-                takeClaims: false,
-                settleUsingBurn: false
-            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             ""
         );
     }
