@@ -25,7 +25,9 @@ contract OscillonHookBasicTest is Test, Deployers {
     event DepegDetected(PoolId indexed poolId, uint256 depegBps, uint24 feeApplied, uint256 swapSize, bool isDrain);
 
     uint256 constant AMOUNT_IN = 1e15;
-    uint24 constant MAX_FEE_PIPS = 5000; // severe depeg fee cap in hook
+    uint24 constant FEE_20_BPS_DEPEG = 101;
+    uint24 constant FEE_50_BPS_DEPEG = 111;
+    uint24 constant FEE_100_BPS_DEPEG = 145;
 
     MockERC20 stable0;
     MockERC20 stable1;
@@ -100,15 +102,53 @@ contract OscillonHookBasicTest is Test, Deployers {
     }
 
     function test_swap_WhenStableDropsTo089_UsesMaxFee() public {
-        // Depeg stable1 from $1.00 -> $0.89 (11% depeg = 1100 bps).
-        oracle1.updateAnswer(990000000000000000);
+        // 0.99 => 100 bps depeg.
+        _swapSellingStable1Expect(990000000000000000, 100, FEE_100_BPS_DEPEG, true);
+    }
+
+    function test_swap_DynamicFee_LowDepeg_NoCap() public {
+        // 0.998 => 20 bps depeg.
+        _swapSellingStable1Expect(998000000000000000, 20, FEE_20_BPS_DEPEG, true);
+    }
+
+    function test_swap_DynamicFee_SevereButNotCapped() public {
+        // 0.995 => 50 bps depeg.
+        _swapSellingStable1Expect(995000000000000000, 50, FEE_50_BPS_DEPEG, true);
+    }
+
+    function test_swap_WhenStableAbovePeg_UsesRestoreFee() public {
+        // 1.01 => 100 bps deviation above peg, so this is restore direction.
+        _swapSellingStable1Expect(1010000000000000000, 100, 30, false);
+    }
+
+    function test_transferOwnership_UpdatesImmediately() public {
+        address multisig = address(0xBEEF);
+        hook.transferOwnership(multisig);
+        assertEq(hook.owner(), multisig);
+    }
+
+    function test_transferOwnership_OldOwnerLosesAccessAfterAccept() public {
+        address multisig = address(0xCAFE);
+        hook.transferOwnership(multisig);
+
+        vm.expectRevert(bytes4(keccak256("NotOwner()")));
+        hook.transferOwnership(address(0xD00D));
+    }
+
+    function _swapSellingStable1Expect(
+        int256 oracleAnswer,
+        uint256 expectedDepegBps,
+        uint24 expectedFeePips,
+        bool expectedIsDrain
+    ) internal {
+        oracle1.updateAnswer(oracleAnswer);
 
         bool stable1IsCurrency0 = Currency.unwrap(poolKey.currency0) == address(stable1);
         bool zeroForOne = stable1IsCurrency0; // sell stable1 into pool
         uint160 sqrtPriceLimitX96 = zeroForOne ? (TickMath.MIN_SQRT_PRICE + 1) : (TickMath.MAX_SQRT_PRICE - 1);
 
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolKey.toId(), 100, MAX_FEE_PIPS, AMOUNT_IN, true);
+        emit DepegDetected(poolKey.toId(), expectedDepegBps, expectedFeePips, AMOUNT_IN, expectedIsDrain);
 
         swapRouter.swap(
             poolKey,
