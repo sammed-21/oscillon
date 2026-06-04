@@ -128,7 +128,7 @@ contract OscillonHook is BaseHook {
 
     // ── Depeg thresholds (bps) ────────────────────────────────────────────────
 
-    uint256 public constant SMALL_DEPEG_BPS = 7;
+    uint256 public constant SMALL_DEPEG_BPS = 5;
 
     // ── Timing ───────────────────────────────────────────────────────────────
 
@@ -241,7 +241,7 @@ contract OscillonHook is BaseHook {
         address oracle1,
         uint8 stableDecimals0,
         uint8 stableDecimals1
-    ) external {
+    ) external onlyOwner {
         // [CHANGE 9] Stable-only enforcement via tick spacing
         if (key.tickSpacing != 1) revert NotStablePool();
 
@@ -399,9 +399,7 @@ contract OscillonHook is BaseHook {
         if (nowTs == last.blockTimestamp) return; // dedupe within same second
 
         int56 delta = int56(uint56(nowTs - last.blockTimestamp));
-        int56 newCumulative = last.tickCumulative +
-            int56(currentTick) *
-            delta;
+        int56 newCumulative = last.tickCumulative + int56(currentTick) * delta;
 
         uint16 nextIdx = (lastIdx + 1) % OBS_CARDINALITY;
         observations[poolId][nextIdx] = Observation({
@@ -442,7 +440,6 @@ contract OscillonHook is BaseHook {
             bool pegBelow,
             bool usingFallback
         ) = _readDepegWithFallback(key, feed, dec);
-
         uint256 swapSize = params.amountSpecified < 0
             ? uint256(-params.amountSpecified)
             : uint256(params.amountSpecified);
@@ -649,7 +646,6 @@ contract OscillonHook is BaseHook {
             uint256 updatedAt,
             uint80 answeredInRound
         ) = IAggregatorV3Interface(oracle).latestRoundData();
-
         if (answer <= 0) revert OracleAnswerInvalid();
         if (answeredInRound < roundId)
             revert OracleRoundIncomplete(roundId, answeredInRound);

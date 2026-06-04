@@ -2,15 +2,11 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
-  workflow_dispatch:
-
-env:
-  FOUNDRY_PROFILE: ci
 
 jobs:
-  check:
-    name: Foundry project
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,22 +15,28 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
 
-      - name: Show Forge version
+      - name: Print versions
         run: |
           forge --version
+          forge solc --version
 
-      - name: Run Forge fmt
-        run: |
-          forge fmt --check
-        id: fmt
+      - name: Build
+        run: forge build --sizes
 
-      - name: Run Forge build
-        run: |
-          forge build --sizes
-        id: build
+      - name: Run tests
+        run: forge test -vvv
 
-      - name: Run Forge tests
-        run: |
-          forge test -vvv
-        id: test
+    lint:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+          with:
+            submodules: recursive
+
+        - uses: foundry-rs/foundry-toolchain@v1
+
+        - name: Check formatting
+          run: forge fmt --check
