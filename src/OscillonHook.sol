@@ -20,6 +20,7 @@ import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IAggregatorV3Interface} from "./interface/IAggregatorV3Interface.sol";
+import {console2} from "forge-std/console2.sol";
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
@@ -241,7 +242,7 @@ contract OscillonHook is BaseHook {
         address oracle1,
         uint8 stableDecimals0,
         uint8 stableDecimals1
-    ) external {
+    ) external onlyOwner {
         // [CHANGE 9] Stable-only enforcement via tick spacing
         if (key.tickSpacing != 1) revert NotStablePool();
 
@@ -304,7 +305,23 @@ contract OscillonHook is BaseHook {
 
         // [CHANGE 2] Exact output disabled during ANY active depeg
         // Prevents Bunni-style rounding attack on exact output path
+        console2.log("params amountSpecified", params.amountSpecified);
+        console2.log(
+            "params depeg > = Small Depeg",
+            ctx.depegBps >= SMALL_DEPEG_BPS
+        );
+
+        console2.log("params amountSpecified", params.amountSpecified > 0);
         if (params.amountSpecified > 0 && ctx.depegBps >= SMALL_DEPEG_BPS) {
+            console2.log("depegBps", ctx.depegBps);
+            console2.log("params.amountSpecified", params.amountSpecified);
+            console2.log("ctx.tokenInIsToken0", ctx.tokenInIsToken0);
+            console2.log("ctx.token0", cfg.token0);
+            console2.log("ctx.token1", cfg.token1);
+            console2.log("ctx.oracle0", cfg.oracle0);
+            console2.log("ctx.oracle1", cfg.oracle1);
+            console2.log("ctx.oracle0Decimals", cfg.oracle0Decimals);
+            console2.log("ctx.oracle1Decimals", cfg.oracle1Decimals);
             revert ExactOutputDisabledDuringDepeg(ctx.depegBps);
         }
 
@@ -399,9 +416,7 @@ contract OscillonHook is BaseHook {
         if (nowTs == last.blockTimestamp) return; // dedupe within same second
 
         int56 delta = int56(uint56(nowTs - last.blockTimestamp));
-        int56 newCumulative = last.tickCumulative +
-            int56(currentTick) *
-            delta;
+        int56 newCumulative = last.tickCumulative + int56(currentTick) * delta;
 
         uint16 nextIdx = (lastIdx + 1) % OBS_CARDINALITY;
         observations[poolId][nextIdx] = Observation({
@@ -442,7 +457,9 @@ contract OscillonHook is BaseHook {
             bool pegBelow,
             bool usingFallback
         ) = _readDepegWithFallback(key, feed, dec);
-
+        console2.log("depegBps", depegBps);
+        console2.log("pegBelow", pegBelow);
+        console2.log("usingFallback", usingFallback);
         uint256 swapSize = params.amountSpecified < 0
             ? uint256(-params.amountSpecified)
             : uint256(params.amountSpecified);
@@ -649,7 +666,7 @@ contract OscillonHook is BaseHook {
             uint256 updatedAt,
             uint80 answeredInRound
         ) = IAggregatorV3Interface(oracle).latestRoundData();
-
+        console2.log("answer", answer);
         if (answer <= 0) revert OracleAnswerInvalid();
         if (answeredInRound < roundId)
             revert OracleRoundIncomplete(roundId, answeredInRound);
