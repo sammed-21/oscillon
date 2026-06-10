@@ -27,6 +27,7 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 import {MockV3Aggregator} from "./mock/MockV3Aggregator.sol";
 import {OscillonHook} from "../src/OscillonHook.sol";
+import {ChainlinkOracleAdapter} from "../src/oracle/adapters/ChainlinkOracleAdapter.sol";
 
 contract OscillonHookTwapTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
@@ -38,6 +39,8 @@ contract OscillonHookTwapTest is Test, Deployers {
     MockERC20 stable1;
     MockV3Aggregator oracle0;
     MockV3Aggregator oracle1;
+    ChainlinkOracleAdapter adapter0;
+    ChainlinkOracleAdapter adapter1;
     OscillonHook hook;
     PoolKey poolKey;
     bytes32 poolId; // raw PoolId (bytes32) to avoid cross-package type issues
@@ -58,6 +61,8 @@ contract OscillonHookTwapTest is Test, Deployers {
 
         oracle0 = new MockV3Aggregator(18, int256(1e18));
         oracle1 = new MockV3Aggregator(18, int256(1e18));
+        adapter0 = new ChainlinkOracleAdapter(address(oracle0), address(0), 25 hours);
+        adapter1 = new ChainlinkOracleAdapter(address(oracle1), address(0), 25 hours);
 
         // v3.0 permissions: beforeSwap + afterInitialize + afterSwap.
         uint160 flags = uint160(
@@ -65,12 +70,11 @@ contract OscillonHookTwapTest is Test, Deployers {
                 Hooks.AFTER_INITIALIZE_FLAG |
                 Hooks.AFTER_SWAP_FLAG
         );
-        deployCodeTo("OscillonHook", abi.encode(manager), address(flags));
+        deployCodeTo("OscillonHook", abi.encode(manager, address(this)), address(flags));
         hook = OscillonHook(payable(address(flags)));
 
-        // Approve oracles (required by v3 oracle registry).
-        hook.approveOracle(address(oracle0));
-        hook.approveOracle(address(oracle1));
+        hook.approveAdapter(address(adapter0));
+        hook.approveAdapter(address(adapter1));
 
         // Order currencies; init pool with tickSpacing=1 (stable-only guard).
         Currency c0 = Currency.wrap(address(stable0));
@@ -94,11 +98,11 @@ contract OscillonHookTwapTest is Test, Deployers {
         );
 
         address oForC0 = Currency.unwrap(poolKey.currency0) == address(stable0)
-            ? address(oracle0)
-            : address(oracle1);
+            ? address(adapter0)
+            : address(adapter1);
         address oForC1 = Currency.unwrap(poolKey.currency0) == address(stable0)
-            ? address(oracle1)
-            : address(oracle0);
+            ? address(adapter1)
+            : address(adapter0);
 
         // Low-level call: PoolKey type differs across the v4-core / @uniswap/v4-core remap.
         (bool ok, ) = address(hook).call(
@@ -286,19 +290,13 @@ contract OscillonHookTwapTest is Test, Deployers {
 // Depeg detection + dynamic-fee selection
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Fee model (v3.0):
-//   depegBps < 7  → BASE_FEE_PIPS (100 = 1 bps)
+// Fee model (hybrid piecewise + quadratic):
+//   depegBps < SMALL_DEPEG_BPS (3) → BASE_FEE_PIPS (300 = 3 bps)
 //   restore-direction (input ABOVE peg) → BASE_FEE_PIPS
-//   drain-direction:
-//     rawFee = 100 + (K * depegBps²) / 10_000
-//     K = 60 if poolLiquidity < 500_000e6 else K = 45
-//     fee capped at MAX_FEE_PIPS = 5000
+//   drain-direction: max(piecewise, quadratic with 3bps dead band), then pips = bps * 100
 //
-// With LIQUIDITY_PARAMS (1e18 active liquidity in [-120, 120]) we are in the
-// K=45 regime, so:
-//     20 bps depeg → fee = 100 + (45 *   400)/10_000 = 101
-//     50 bps depeg → fee = 100 + (45 * 2_500)/10_000 = 111
-//    100 bps depeg → fee = 100 + (45 * 10_000)/10_000 = 145
+// With K=45:
+//     20 bps depeg → hybrid fee = 6 bps = 600 pips
 //
 // Disagreement guard ([CHANGE 4]): if |Chainlink − TWAP| > 20 bps, the hook
 // uses the reading closer to $1. In this test environment spot==TWAP==$1, so
@@ -319,14 +317,17 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         bool usingFallback
     );
 
-    uint24 constant BASE_FEE = 100;
-    uint24 constant FEE_AT_20_BPS = 101;
+    uint24 constant BASE_FEE = 300;
+    uint24 constant FEE_AT_6_BPS_DRAIN = 100; // hybrid = 1 bps at 6 bps depeg
+    uint24 constant FEE_AT_20_BPS = 600;
     uint256 constant AMOUNT_IN = 1e15;
 
     MockERC20 stable0;
     MockERC20 stable1;
     MockV3Aggregator oracle0;
     MockV3Aggregator oracle1; // always represents the "input" oracle in our tests
+    ChainlinkOracleAdapter adapter0;
+    ChainlinkOracleAdapter adapter1;
     OscillonHook hook;
     PoolKey poolKey;
     bytes32 poolId;
@@ -349,17 +350,19 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
 
         oracle0 = new MockV3Aggregator(18, int256(1e18));
         oracle1 = new MockV3Aggregator(18, int256(1e18));
+        adapter0 = new ChainlinkOracleAdapter(address(oracle0), address(0), 25 hours);
+        adapter1 = new ChainlinkOracleAdapter(address(oracle1), address(0), 25 hours);
 
         uint160 flags = uint160(
             Hooks.BEFORE_SWAP_FLAG |
                 Hooks.AFTER_INITIALIZE_FLAG |
                 Hooks.AFTER_SWAP_FLAG
         );
-        deployCodeTo("OscillonHook", abi.encode(manager), address(flags));
+        deployCodeTo("OscillonHook", abi.encode(manager, address(this)), address(flags));
         hook = OscillonHook(payable(address(flags)));
 
-        hook.approveOracle(address(oracle0));
-        hook.approveOracle(address(oracle1));
+        hook.approveAdapter(address(adapter0));
+        hook.approveAdapter(address(adapter1));
 
         Currency c0 = Currency.wrap(address(stable0));
         Currency c1 = Currency.wrap(address(stable1));
@@ -384,12 +387,8 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // Map oracle0/oracle1 to whichever currency they correspond to.
         bool stable0IsCurrency0 = Currency.unwrap(poolKey.currency0) ==
             address(stable0);
-        address oForC0 = stable0IsCurrency0
-            ? address(oracle0)
-            : address(oracle1);
-        address oForC1 = stable0IsCurrency0
-            ? address(oracle1)
-            : address(oracle0);
+        address oForC0 = stable0IsCurrency0 ? address(adapter0) : address(adapter1);
+        address oForC1 = stable0IsCurrency0 ? address(adapter1) : address(adapter0);
         sellStable1ZeroForOne = !stable0IsCurrency0; // sell stable1 → input is currency1 unless stable1 sorts first
 
         (bool ok, ) = address(hook).call(
@@ -417,13 +416,13 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
-    // ── Depeg below SMALL_DEPEG_BPS (7) → still BASE_FEE ─────────────────────
+    // ── Small drain depeg → hybrid fee (1 bps at 6 bps deviation) ────────────
 
     function test_swap_SmallDepegBelowThreshold_AppliesBaseFee() public {
-        // 0.9994 → 6 bps deviation, below the 7-bps activation threshold.
+        // 0.9994 → 6 bps deviation; hybrid piecewise/quadratic yields 1 bps = 100 pips.
         oracle1.updateAnswer(int256(0.9994e18));
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 6, BASE_FEE, AMOUNT_IN, true, false);
+        emit DepegDetected(poolId, 6, FEE_AT_6_BPS_DRAIN, AMOUNT_IN, true, false);
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -438,9 +437,9 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
-    // ── Drain depeg at 20 bps → quadratic fee = 101 ──────────────────────────
+    // ── Drain depeg at 20 bps → hybrid fee = 600 pips (6 bps) ────────────────
 
-    function test_swap_Drain20bps_AppliesQuadraticFee() public {
+    function test_swap_Drain20bps_AppliesHybridFee() public {
         // 0.998 → 20 bps below peg. Diff vs spot = 20 bps == ORACLE_DISAGREE_BPS,
         // and the guard check is strictly `>`, so Chainlink is used directly.
         oracle1.updateAnswer(int256(0.998e18));
@@ -481,7 +480,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
     // ── Exact-output during a depeg → reverts ───────────────────────────────
 
     function test_exactOutput_RevertsDuringDepeg() public {
-        oracle1.updateAnswer(int256(0.998e18)); // 20 bps depeg, depegBps >= 7
+        oracle1.updateAnswer(int256(0.998e18)); // 20 bps depeg, depegBps >= SMALL_DEPEG_BPS
 
         // v4 wraps hook reverts in WrappedError(address,bytes4,bytes,bytes4),
         // so we capture the revert payload and assert the inner reason is

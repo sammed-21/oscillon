@@ -132,6 +132,20 @@ forge fmt
 forge snapshot
 ```
 
+## Known Limitations (Pre-Audit)
+
+**Surplus accounting (indicative only)**
+
+`surplusAccrued` and `protocolAccrued` track theoretical LP surplus from dynamic fees but are not connected to actual v4 fee settlement. These values are meaningful as indicators of mechanism activity but `collectProtocolFees` is not safe for production use without implementing proper fee skimming via `donate()` or `afterSwapReturnDelta`. This is a known P0 for mainnet — deferred for POC submission.
+
+**Rounding direction**
+
+Fee surplus math uses `mulDivDown` throughout. This is conservative (slightly under-charges). A production deployment would implement `mulDivUp` on surplus accrual per the rounding policy documented in the audit report.
+
+**K parameter liquidity threshold**
+
+`THIN_POOL_LIQUIDITY` comparison uses incorrect units (USDC atoms vs AMM liquidity units). Fixed by using `K_STANDARD=45` universally in this version.
+
 ## MVP Limitations
 
 - Static thresholds and fee tiers (not governance-tunable yet)
