@@ -70,7 +70,7 @@ contract OscillonHookTwapTest is Test, Deployers {
                 Hooks.AFTER_INITIALIZE_FLAG |
                 Hooks.AFTER_SWAP_FLAG
         );
-        deployCodeTo("OscillonHook", abi.encode(manager), address(flags));
+        deployCodeTo("OscillonHook", abi.encode(manager, address(this)), address(flags));
         hook = OscillonHook(payable(address(flags)));
 
         hook.approveAdapter(address(adapter0));
@@ -291,7 +291,7 @@ contract OscillonHookTwapTest is Test, Deployers {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Fee model (hybrid piecewise + quadratic):
-//   depegBps < 7  → BASE_FEE_PIPS (100 = 1 bps)
+//   depegBps < SMALL_DEPEG_BPS (3) → BASE_FEE_PIPS (300 = 3 bps)
 //   restore-direction (input ABOVE peg) → BASE_FEE_PIPS
 //   drain-direction: max(piecewise, quadratic with 3bps dead band), then pips = bps * 100
 //
@@ -317,7 +317,8 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         bool usingFallback
     );
 
-    uint24 constant BASE_FEE = 100;
+    uint24 constant BASE_FEE = 300;
+    uint24 constant FEE_AT_6_BPS_DRAIN = 100; // hybrid = 1 bps at 6 bps depeg
     uint24 constant FEE_AT_20_BPS = 600;
     uint256 constant AMOUNT_IN = 1e15;
 
@@ -357,7 +358,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
                 Hooks.AFTER_INITIALIZE_FLAG |
                 Hooks.AFTER_SWAP_FLAG
         );
-        deployCodeTo("OscillonHook", abi.encode(manager), address(flags));
+        deployCodeTo("OscillonHook", abi.encode(manager, address(this)), address(flags));
         hook = OscillonHook(payable(address(flags)));
 
         hook.approveAdapter(address(adapter0));
@@ -415,13 +416,13 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
-    // ── Depeg below SMALL_DEPEG_BPS (7) → still BASE_FEE ─────────────────────
+    // ── Small drain depeg → hybrid fee (1 bps at 6 bps deviation) ────────────
 
     function test_swap_SmallDepegBelowThreshold_AppliesBaseFee() public {
-        // 0.9994 → 6 bps deviation, below the 7-bps activation threshold.
+        // 0.9994 → 6 bps deviation; hybrid piecewise/quadratic yields 1 bps = 100 pips.
         oracle1.updateAnswer(int256(0.9994e18));
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 6, BASE_FEE, AMOUNT_IN, true, false);
+        emit DepegDetected(poolId, 6, FEE_AT_6_BPS_DRAIN, AMOUNT_IN, true, false);
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -479,7 +480,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
     // ── Exact-output during a depeg → reverts ───────────────────────────────
 
     function test_exactOutput_RevertsDuringDepeg() public {
-        oracle1.updateAnswer(int256(0.998e18)); // 20 bps depeg, depegBps >= 7
+        oracle1.updateAnswer(int256(0.998e18)); // 20 bps depeg, depegBps >= SMALL_DEPEG_BPS
 
         // v4 wraps hook reverts in WrappedError(address,bytes4,bytes,bytes4),
         // so we capture the revert payload and assert the inner reason is

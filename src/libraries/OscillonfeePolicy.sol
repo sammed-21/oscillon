@@ -6,16 +6,21 @@ import {OscillonConstants as C} from "../constants/OscillonConstants.sol";
 /// @title OscillonFeePolicy
 /// @notice Hybrid piecewise + quadratic drain fee model (returns bps, hook converts to pips).
 library OscillonFeePolicy {
-    function kForLiquidity(uint128 poolLiquidity) internal pure returns (uint256) {
-        return uint256(poolLiquidity) < C.THIN_POOL_LIQUIDITY ? C.K_THIN : C.K_STANDARD;
+    function kForLiquidity() internal pure returns (uint256) {
+        return C.K_STANDARD;
     }
 
-    function hybridFeeBps(uint256 devBps, uint256 k) internal pure returns (uint256) {
+    function hybridFeeBps(
+        uint256 devBps,
+        uint256 k
+    ) internal pure returns (uint256) {
         if (devBps == 0) return 1;
 
         uint256 pw = piecewiseFeeBps(devBps);
 
-        uint256 d = devBps > C.QUADRATIC_DEAD_BAND ? devBps - C.QUADRATIC_DEAD_BAND : 0;
+        uint256 d = devBps > C.QUADRATIC_DEAD_BAND
+            ? devBps - C.QUADRATIC_DEAD_BAND
+            : 0;
         uint256 quad = 1 + (k * d * d) / 10_000;
         if (quad > C.MAX_FEE_BPS) quad = C.MAX_FEE_BPS;
 
@@ -57,7 +62,9 @@ library OscillonFeePolicy {
         feePips = uint24(pips > C.MAX_FEE_PIPS ? C.MAX_FEE_PIPS : pips);
     }
 
-    function rollingMultiplier(uint256 drainPctBps) internal pure returns (uint256) {
+    function rollingMultiplier(
+        uint256 drainPctBps
+    ) internal pure returns (uint256) {
         if (drainPctBps > 300) return 150;
         if (drainPctBps > 150) return 125;
         if (drainPctBps > 75) return 110;

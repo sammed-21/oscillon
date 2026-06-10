@@ -12,3 +12,6 @@ docs/
 
 # Dotenv file
 .env
+
+# Root deploy artifact (oscillon-ui/src/deployment.json is updated in-place by forge)
+/deployment.json

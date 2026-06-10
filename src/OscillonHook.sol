@@ -17,7 +17,6 @@ import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
 import {OscillonConstants as C} from "./constants/OscillonConstants.sol";
 import {
     PoolConfig,
@@ -69,10 +68,17 @@ contract OscillonHook is BaseHook {
     );
     event AdapterApproved(address indexed adapter);
     event AdapterRevoked(address indexed adapter);
-    event ChainlinkOracleUpdated(PoolId indexed poolId, bool isToken0, address adapter);
+    event ChainlinkOracleUpdated(
+        PoolId indexed poolId,
+        bool isToken0,
+        address adapter
+    );
     event ProtocolFeesCollected(PoolId indexed poolId, uint256 amount);
     event ProtocolTreasuryUpdated(address newTreasury);
-    event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+    event OwnershipTransferred(
+        address indexed oldOwner,
+        address indexed newOwner
+    );
 
     address public owner;
     address public protocolTreasury;
@@ -83,28 +89,38 @@ contract OscillonHook is BaseHook {
     mapping(PoolId => uint256) public rollingDrain;
     mapping(PoolId => uint256) public rollingWindowStart;
 
-    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {
-        owner = msg.sender;
-        protocolTreasury = msg.sender;
+    constructor(
+        IPoolManager _poolManager,
+        address initialOwner
+    ) BaseHook(_poolManager) {
+        if (initialOwner == address(0)) revert ZeroAddress();
+        owner = initialOwner;
+        protocolTreasury = initialOwner;
     }
 
-    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
-        return Hooks.Permissions({
-            beforeInitialize: false,
-            afterInitialize: true,
-            beforeAddLiquidity: false,
-            afterAddLiquidity: false,
-            beforeRemoveLiquidity: false,
-            afterRemoveLiquidity: false,
-            beforeSwap: true,
-            afterSwap: true,
-            beforeDonate: false,
-            afterDonate: false,
-            beforeSwapReturnDelta: false,
-            afterSwapReturnDelta: false,
-            afterAddLiquidityReturnDelta: false,
-            afterRemoveLiquidityReturnDelta: false
-        });
+    function getHookPermissions()
+        public
+        pure
+        override
+        returns (Hooks.Permissions memory)
+    {
+        return
+            Hooks.Permissions({
+                beforeInitialize: false,
+                afterInitialize: true,
+                beforeAddLiquidity: false,
+                afterAddLiquidity: false,
+                beforeRemoveLiquidity: false,
+                afterRemoveLiquidity: false,
+                beforeSwap: true,
+                afterSwap: true,
+                beforeDonate: false,
+                afterDonate: false,
+                beforeSwapReturnDelta: false,
+                afterSwapReturnDelta: false,
+                afterAddLiquidityReturnDelta: false,
+                afterRemoveLiquidityReturnDelta: false
+            });
     }
 
     // ── TWAP storage accessors (tests / monitoring) ───────────────────────────
@@ -117,7 +133,10 @@ contract OscillonHook is BaseHook {
         return twapStates[poolId].obsIndex;
     }
 
-    function observations(PoolId poolId, uint16 idx)
+    function observations(
+        PoolId poolId,
+        uint16 idx
+    )
         external
         view
         returns (uint32 blockTimestamp, int56 tickCumulative, bool initialized)
@@ -136,9 +155,12 @@ contract OscillonHook is BaseHook {
         uint8 stableDecimals1
     ) external onlyOwner {
         if (key.tickSpacing != 1) revert NotStablePool();
-        if (!approvedAdapters[chainlinkAdapter0]) revert AdapterNotApproved(chainlinkAdapter0);
-        if (!approvedAdapters[chainlinkAdapter1]) revert AdapterNotApproved(chainlinkAdapter1);
-        if (chainlinkAdapter0 == address(0) || chainlinkAdapter1 == address(0)) revert ZeroAddress();
+        if (!approvedAdapters[chainlinkAdapter0])
+            revert AdapterNotApproved(chainlinkAdapter0);
+        if (!approvedAdapters[chainlinkAdapter1])
+            revert AdapterNotApproved(chainlinkAdapter1);
+        if (chainlinkAdapter0 == address(0) || chainlinkAdapter1 == address(0))
+            revert ZeroAddress();
 
         address token0 = Currency.unwrap(key.currency0);
         address token1 = Currency.unwrap(key.currency1);
@@ -153,14 +175,22 @@ contract OscillonHook is BaseHook {
             token1: token1,
             oracles0: TokenOracleConfig({chainlinkAdapter: chainlinkAdapter0}),
             oracles1: TokenOracleConfig({chainlinkAdapter: chainlinkAdapter1}),
-            maxDepegSwap0: C.MAX_DEPEG_SWAP_FACTOR * (10 ** uint256(stableDecimals0)),
-            maxDepegSwap1: C.MAX_DEPEG_SWAP_FACTOR * (10 ** uint256(stableDecimals1)),
+            maxDepegSwap0: C.MAX_DEPEG_SWAP_FACTOR *
+                (10 ** uint256(stableDecimals0)),
+            maxDepegSwap1: C.MAX_DEPEG_SWAP_FACTOR *
+                (10 ** uint256(stableDecimals1)),
             lastHighDepegAt: 0,
             surplusAccrued: 0,
             protocolAccrued: 0
         });
 
-        emit PoolRegistered(poolId, token0, token1, chainlinkAdapter0, chainlinkAdapter1);
+        emit PoolRegistered(
+            poolId,
+            token0,
+            token1,
+            chainlinkAdapter0,
+            chainlinkAdapter1
+        );
     }
 
     /// @notice Replace a pool's Chainlink adapter after deployment (e.g. feed migration).
@@ -169,11 +199,14 @@ contract OscillonHook is BaseHook {
         bool isToken0,
         address newChainlinkAdapter
     ) external onlyOwner {
-        if (!approvedAdapters[newChainlinkAdapter]) revert AdapterNotApproved(newChainlinkAdapter);
+        if (!approvedAdapters[newChainlinkAdapter])
+            revert AdapterNotApproved(newChainlinkAdapter);
         PoolConfig storage cfg = poolConfigs[key.toId()];
         if (!cfg.registered) revert PoolNotRegistered();
 
-        TokenOracleConfig storage oracles = isToken0 ? cfg.oracles0 : cfg.oracles1;
+        TokenOracleConfig storage oracles = isToken0
+            ? cfg.oracles0
+            : cfg.oracles1;
         oracles.chainlinkAdapter = newChainlinkAdapter;
 
         emit ChainlinkOracleUpdated(key.toId(), isToken0, newChainlinkAdapter);
@@ -205,13 +238,22 @@ contract OscillonHook is BaseHook {
         }
 
         uint128 liquidity = poolManager.getLiquidity(poolId);
-        uint256 maxAbsolute = ctx.tokenInIsToken0 ? cfg.maxDepegSwap0 : cfg.maxDepegSwap1;
+        uint256 maxAbsolute = ctx.tokenInIsToken0
+            ? cfg.maxDepegSwap0
+            : cfg.maxDepegSwap1;
         uint256 cap = _min(maxAbsolute, (uint256(liquidity) * 50) / 10_000);
         if (ctx.isDrain && ctx.swapSize > cap) revert SwapCapExceeded();
 
-        uint24 fee = _selectFee(poolId, cfg, ctx, liquidity);
+        uint24 fee = _selectFee(poolId, cfg, ctx);
 
-        emit DepegDetected(poolId, ctx.depegBps, fee, ctx.swapSize, ctx.isDrain, ctx.usingFallback);
+        emit DepegDetected(
+            poolId,
+            ctx.depegBps,
+            fee,
+            ctx.swapSize,
+            ctx.isDrain,
+            ctx.usingFallback
+        );
 
         return (
             this.beforeSwap.selector,
@@ -220,11 +262,12 @@ contract OscillonHook is BaseHook {
         );
     }
 
-    function _afterInitialize(address, PoolKey calldata key, uint160, int24)
-        internal
-        override
-        returns (bytes4)
-    {
+    function _afterInitialize(
+        address,
+        PoolKey calldata key,
+        uint160,
+        int24
+    ) internal override returns (bytes4) {
         OscillonTwapOracle.seed(twapStates[key.toId()]);
         return this.afterInitialize.selector;
     }
@@ -254,11 +297,21 @@ contract OscillonHook is BaseHook {
         bool tokenInIsToken0 = params.zeroForOne;
         address tokenIn = tokenInIsToken0 ? cfg.token0 : cfg.token1;
 
-        if (tokenIn != cfg.token0 && tokenIn != cfg.token1) revert UnsupportedToken(tokenIn);
+        if (tokenIn != cfg.token0 && tokenIn != cfg.token1)
+            revert UnsupportedToken(tokenIn);
 
-        TokenOracleConfig memory tokenOracles = tokenInIsToken0 ? cfg.oracles0 : cfg.oracles1;
-        uint256 twapPrice = OscillonTwapOracle.readTwapOrSpot(poolManager, key, twapStates[key.toId()]);
-        PriceResult memory price = OscillonPriceEngine.getSellTokenPrice(tokenOracles, twapPrice);
+        TokenOracleConfig memory tokenOracles = tokenInIsToken0
+            ? cfg.oracles0
+            : cfg.oracles1;
+        uint256 twapPrice = OscillonTwapOracle.readTwapOrSpot(
+            poolManager,
+            key,
+            twapStates[key.toId()]
+        );
+        PriceResult memory price = OscillonPriceEngine.getSellTokenPrice(
+            tokenOracles,
+            twapPrice
+        );
 
         uint256 swapSize = params.amountSpecified < 0
             ? uint256(-params.amountSpecified)
@@ -278,29 +331,37 @@ contract OscillonHook is BaseHook {
     function _selectFee(
         PoolId poolId,
         PoolConfig storage cfg,
-        SwapContext memory ctx,
-        uint128 poolLiquidity
+        SwapContext memory ctx
     ) internal returns (uint24 fee) {
-        bool inRestoreWindow = cfg.lastHighDepegAt != 0
-            && (block.timestamp - cfg.lastHighDepegAt) <= C.RESTORE_WINDOW;
+        bool inRestoreWindow = cfg.lastHighDepegAt != 0 &&
+            (block.timestamp - cfg.lastHighDepegAt) <= C.RESTORE_WINDOW;
 
         if (ctx.depegBps < C.SMALL_DEPEG_BPS) {
-            if (inRestoreWindow && ctx.depegBps == 0 && !ctx.isDrain) return C.RESTORE_FEE_PIPS;
+            if (inRestoreWindow && ctx.depegBps == 0 && !ctx.isDrain)
+                return C.RESTORE_FEE_PIPS;
             return C.BASE_FEE_PIPS;
         }
 
         cfg.lastHighDepegAt = block.timestamp;
         if (!ctx.isDrain) return C.BASE_FEE_PIPS;
 
-        uint256 k = OscillonFeePolicy.kForLiquidity(poolLiquidity);
+        uint256 k = OscillonFeePolicy.kForLiquidity();
         uint256 feeBps = OscillonFeePolicy.hybridFeeBps(ctx.depegBps, k);
         uint256 mult = _rollingMultiplier(poolId, ctx.swapSize, true);
-        fee = OscillonFeePolicy.applyDrainAdjustments(feeBps, ctx.usingFallback, ctx.depegBps, mult);
+        fee = OscillonFeePolicy.applyDrainAdjustments(
+            feeBps,
+            ctx.usingFallback,
+            ctx.depegBps,
+            mult
+        );
 
         if (fee > C.BASE_FEE_PIPS) {
             uint256 surplusBps = uint256(fee / 100) - 1;
-            uint256 surplusAmount = ctx.swapSize.mulDivDown(surplusBps, 10_000);
-            uint256 protocolCut = surplusAmount.mulDivDown(C.PROTOCOL_FEE_BPS, 100);
+            uint256 surplusAmount = ctx.swapSize.mulDivUp(surplusBps, 10_000);
+            uint256 protocolCut = surplusAmount.mulDivUp(
+                C.PROTOCOL_FEE_BPS,
+                100
+            );
             cfg.surplusAccrued += surplusAmount - protocolCut;
             cfg.protocolAccrued += protocolCut;
         }
@@ -308,10 +369,11 @@ contract OscillonHook is BaseHook {
         return fee;
     }
 
-    function _rollingMultiplier(PoolId poolId, uint256 swapSize, bool isDrain)
-        internal
-        returns (uint256)
-    {
+    function _rollingMultiplier(
+        PoolId poolId,
+        uint256 swapSize,
+        bool isDrain
+    ) internal returns (uint256) {
         if (block.number > rollingWindowStart[poolId] + C.ROLLING_BLOCKS) {
             rollingDrain[poolId] = 0;
             rollingWindowStart[poolId] = block.number;
@@ -328,7 +390,9 @@ contract OscillonHook is BaseHook {
 
     // ── Views ─────────────────────────────────────────────────────────────────
 
-    function getPoolState(PoolKey calldata key)
+    function getPoolState(
+        PoolKey calldata key
+    )
         external
         view
         returns (
@@ -345,25 +409,38 @@ contract OscillonHook is BaseHook {
         registered = cfg.registered;
         surplusAccrued = cfg.surplusAccrued;
         protocolAccrued = cfg.protocolAccrued;
-        inRestoreWindow = cfg.lastHighDepegAt != 0
-            && (block.timestamp - cfg.lastHighDepegAt) <= C.RESTORE_WINDOW;
+        inRestoreWindow =
+            cfg.lastHighDepegAt != 0 &&
+            (block.timestamp - cfg.lastHighDepegAt) <= C.RESTORE_WINDOW;
 
         if (!cfg.registered) return (false, 0, false, false, 0, 0, false);
 
-        uint256 twapPrice = OscillonTwapOracle.readTwapOrSpot(poolManager, key, twapStates[key.toId()]);
-        PriceResult memory price = OscillonPriceEngine.getSellTokenPrice(cfg.oracles0, twapPrice);
+        uint256 twapPrice = OscillonTwapOracle.readTwapOrSpot(
+            poolManager,
+            key,
+            twapStates[key.toId()]
+        );
+        PriceResult memory price = OscillonPriceEngine.getSellTokenPrice(
+            cfg.oracles0,
+            twapPrice
+        );
         depegBps = price.depegBps;
         pegBelow = price.pegBelow;
         usingFallback = price.usingFallback;
     }
 
-    function getPoolConfig(PoolKey calldata key) external view returns (PoolConfig memory) {
+    function getPoolConfig(
+        PoolKey calldata key
+    ) external view returns (PoolConfig memory) {
         return poolConfigs[key.toId()];
     }
 
     // ── Protocol fees & governance ──────────────────────────────────────────
 
-    function collectProtocolFees(PoolKey calldata key, address token) external onlyOwner {
+    function collectProtocolFees(
+        PoolKey calldata key,
+        address token
+    ) external onlyOwner {
         PoolId id = key.toId();
         PoolConfig storage cfg = poolConfigs[id];
         if (!cfg.registered) revert PoolNotRegistered();
@@ -372,7 +449,8 @@ contract OscillonHook is BaseHook {
         if (amount == 0) return;
         cfg.protocolAccrued = 0;
 
-        if (!IERC20(token).transfer(protocolTreasury, amount)) revert TransferFailed();
+        if (!IERC20(token).transfer(protocolTreasury, amount))
+            revert TransferFailed();
         emit ProtocolFeesCollected(id, amount);
     }
 
