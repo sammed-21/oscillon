@@ -290,13 +290,14 @@ contract OscillonHookTwapTest is Test, Deployers {
 // Depeg detection + dynamic-fee selection
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Fee model (hybrid piecewise + quadratic):
+// Fee model (BASE + depeg surcharge):
 //   depegBps < SMALL_DEPEG_BPS (3) → BASE_FEE_PIPS (300 = 3 bps)
 //   restore-direction (input ABOVE peg) → BASE_FEE_PIPS
-//   drain-direction: max(piecewise, quadratic with 3bps dead band), then pips = bps * 100
+//   drain-direction: BASE_FEE_PIPS + hybrid surcharge (piecewise + quadratic)
 //
 // With K=45:
-//     20 bps depeg → hybrid fee = 6 bps = 600 pips
+//     6 bps depeg  → 3 bps base + 1 bps surcharge = 400 pips
+//     20 bps depeg → 3 bps base + 6 bps surcharge = 900 pips
 //
 // Disagreement guard ([CHANGE 4]): if |Chainlink − TWAP| > 20 bps, the hook
 // uses the reading closer to $1. In this test environment spot==TWAP==$1, so
@@ -318,8 +319,8 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
     );
 
     uint24 constant BASE_FEE = 300;
-    uint24 constant FEE_AT_6_BPS_DRAIN = 100; // hybrid = 1 bps at 6 bps depeg
-    uint24 constant FEE_AT_20_BPS = 600;
+    uint24 constant FEE_AT_6_BPS_DRAIN = 400; // 3 bps base + 1 bps surcharge
+    uint24 constant FEE_AT_20_BPS = 900; // 3 bps base + 6 bps surcharge
     uint256 constant AMOUNT_IN = 1e15;
 
     MockERC20 stable0;
@@ -418,8 +419,8 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
 
     // ── Small drain depeg → hybrid fee (1 bps at 6 bps deviation) ────────────
 
-    function test_swap_SmallDepegBelowThreshold_AppliesBaseFee() public {
-        // 0.9994 → 6 bps deviation; hybrid piecewise/quadratic yields 1 bps = 100 pips.
+    function test_swap_SmallDepegDrain_AppliesBasePlusSurcharge() public {
+        // 0.9994 → 6 bps deviation; 3 bps base + 1 bps surcharge = 400 pips.
         oracle1.updateAnswer(int256(0.9994e18));
         vm.expectEmit(true, false, false, true, address(hook));
         emit DepegDetected(poolId, 6, FEE_AT_6_BPS_DRAIN, AMOUNT_IN, true, false);
@@ -437,7 +438,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
-    // ── Drain depeg at 20 bps → hybrid fee = 600 pips (6 bps) ────────────────
+    // ── Drain depeg at 20 bps → 3 bps base + 6 bps surcharge = 900 pips ─────
 
     function test_swap_Drain20bps_AppliesHybridFee() public {
         // 0.998 → 20 bps below peg. Diff vs spot = 20 bps == ORACLE_DISAGREE_BPS,

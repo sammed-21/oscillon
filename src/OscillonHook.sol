@@ -348,15 +348,16 @@ contract OscillonHook is BaseHook {
         uint256 k = OscillonFeePolicy.kForLiquidity();
         uint256 feeBps = OscillonFeePolicy.hybridFeeBps(ctx.depegBps, k);
         uint256 mult = _rollingMultiplier(poolId, ctx.swapSize, true);
-        fee = OscillonFeePolicy.applyDrainAdjustments(
+        uint24 surcharge = OscillonFeePolicy.depegSurchargePips(
             feeBps,
             ctx.usingFallback,
             ctx.depegBps,
             mult
         );
+        fee = OscillonFeePolicy.totalFeePips(C.BASE_FEE_PIPS, surcharge);
 
-        if (fee > C.BASE_FEE_PIPS) {
-            uint256 surplusBps = uint256(fee / 100) - 1;
+        if (surcharge > 0) {
+            uint256 surplusBps = uint256(surcharge) / 100;
             uint256 surplusAmount = ctx.swapSize.mulDivUp(surplusBps, 10_000);
             uint256 protocolCut = surplusAmount.mulDivUp(
                 C.PROTOCOL_FEE_BPS,

@@ -4,7 +4,8 @@ pragma solidity 0.8.26;
 import {OscillonConstants as C} from "../constants/OscillonConstants.sol";
 
 /// @title OscillonFeePolicy
-/// @notice Hybrid piecewise + quadratic drain fee model (returns bps, hook converts to pips).
+/// @notice Depeg surcharge on top of BASE_FEE_PIPS. Hybrid piecewise + quadratic returns
+///         extra bps for drain swaps; the hook always adds BASE_FEE_PIPS separately.
 library OscillonFeePolicy {
     function kForLiquidity() internal pure returns (uint256) {
         return C.K_STANDARD;
@@ -43,13 +44,14 @@ library OscillonFeePolicy {
         return feeBps > C.MAX_FEE_BPS ? C.MAX_FEE_BPS : feeBps;
     }
 
-    /// @notice Apply TWAP-fallback dampening then rolling multiplier; input/output in pips.
-    function applyDrainAdjustments(
+    /// @notice Depeg surcharge in pips (excludes BASE_FEE_PIPS). TWAP-fallback dampening
+    ///         and rolling multiplier apply to the surcharge component only.
+    function depegSurchargePips(
         uint256 feeBps,
         bool usingFallback,
         uint256 depegBps,
         uint256 rollingMult
-    ) internal pure returns (uint24 feePips) {
+    ) internal pure returns (uint24 surchargePips) {
         uint256 adjusted = feeBps;
 
         if (usingFallback && depegBps < 15) {
@@ -59,7 +61,17 @@ library OscillonFeePolicy {
 
         adjusted = (adjusted * rollingMult) / 100;
         uint256 pips = adjusted * 100;
-        feePips = uint24(pips > C.MAX_FEE_PIPS ? C.MAX_FEE_PIPS : pips);
+        surchargePips = uint24(pips > C.MAX_FEE_PIPS ? C.MAX_FEE_PIPS : pips);
+    }
+
+    /// @notice Total swap fee = base + depeg surcharge, capped at MAX_FEE_PIPS.
+    function totalFeePips(uint24 basePips, uint24 surchargePips)
+        internal
+        pure
+        returns (uint24 totalPips)
+    {
+        uint256 total = uint256(basePips) + uint256(surchargePips);
+        totalPips = uint24(total > C.MAX_FEE_PIPS ? C.MAX_FEE_PIPS : total);
     }
 
     function rollingMultiplier(
