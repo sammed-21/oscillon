@@ -5,10 +5,11 @@ pragma solidity 0.8.26;
  * @title DeployOscillon
  * @notice Deploys OscillonHook + dependencies and writes deployment.json (root + oscillon-ui/src).
  *
+ *   Set PRIVATE_KEY in .env (must include 0x prefix), then:
+ *
  *   forge script script/DeployOscillon.s.sol:DeployOscillon \
- *     --rpc-url http://127.0.0.1:8545 \
- *     --broadcast \
- *     --private-key 0xac0974bec39a17e36ba4a6b4d0ff2cffc6c2bffe6a6861c259c265d822f864
+ *     --rpc-url $RPC_URL \
+ *     --broadcast
  */
 
 import {Script, console2} from "forge-std/Script.sol";
@@ -39,11 +40,13 @@ contract DeployOscillon is Script {
     address constant CL_USDT_USD_ARBITRUM = 0x3f3f5dF88dC9F13eac63DF89EC16ef6e7E25DdE7;
     address constant CL_SEQUENCER_ARBITRUM = 0xFdB631F5EE196F0ed6FAa767959853A9F217697D;
 
-    address constant CL_USDC_USD_SEPOLIA = 0x0153002d20B96532C639313c2d54c3dA09109309;
-    address constant CL_USDT_USD_SEPOLIA = 0x80EDee6f667eCc9f63a0a6f55578F870651f06A4;
+    // Arbitrum Sepolia Chainlink USD feeds
+    address constant CL_USDC_USD_ARBITRUM_SEPOLIA = 0x0153002d20B96532C639313c2d54c3dA09109309;
+    address constant CL_USDT_USD_ARBITRUM_SEPOLIA = 0x80EDee6f667eCc9f63a0a6f55578F870651f06A4;
 
     address constant PM_ARBITRUM = 0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32;
-    address constant PM_SEPOLIA = 0x00B036B58a818B1BC34d502D3fE730Db729e62AC;
+    // Arbitrum Sepolia v4 PoolManager (lib/v4-periphery/broadcast/01_PoolManager.s.sol/421614)
+    address constant PM_ARBITRUM_SEPOLIA = 0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317;
 
     address constant USDC_ARBITRUM = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address constant USDT_ARBITRUM = 0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9;
@@ -76,10 +79,7 @@ contract DeployOscillon is Script {
 
     function run() external {
         uint256 chainId = block.chainid;
-        uint256 deployerKey = vm.envOr(
-            "PRIVATE_KEY",
-            uint256(0xac0974bec39a17e36ba4a6b4d0ff2cffc6c2bffe6a6861c259c265d822f864)
-        );
+        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
 
         vm.startBroadcast(deployerKey);
@@ -112,7 +112,10 @@ contract DeployOscillon is Script {
         if (chainId == 31337 || chainId == 421614) {
             out.swapRouter = address(new PoolSwapTest(poolManager));
             out.liquidityRouter = address(new PoolModifyLiquidityTest(poolManager));
-            PoolManager(pmAddr).setProtocolFeeController(deployer);
+            // Only on Anvil — deployer owns the freshly deployed PoolManager.
+            if (chainId == 31337) {
+                PoolManager(pmAddr).setProtocolFeeController(deployer);
+            }
             _approveRouters(out);
         }
 
@@ -149,7 +152,7 @@ contract DeployOscillon is Script {
 
     function _poolManager(uint256 chainId, address deployer) internal returns (address) {
         if (chainId == 31337) return address(new PoolManager(deployer));
-        if (chainId == 421614) return PM_SEPOLIA;
+        if (chainId == 421614) return PM_ARBITRUM_SEPOLIA;
         if (chainId == 42161) return PM_ARBITRUM;
         revert("DeployOscillon: unsupported chainId");
     }
@@ -181,8 +184,8 @@ contract DeployOscillon is Script {
             return o;
         }
         if (chainId == 421614) {
-            o.usdcFeed = CL_USDC_USD_SEPOLIA;
-            o.usdtFeed = CL_USDT_USD_SEPOLIA;
+            o.usdcFeed = CL_USDC_USD_ARBITRUM_SEPOLIA;
+            o.usdtFeed = CL_USDT_USD_ARBITRUM_SEPOLIA;
             o.usdcAdapter = address(
                 new ChainlinkOracleAdapter(o.usdcFeed, address(0), MAX_ORACLE_AGE)
             );
