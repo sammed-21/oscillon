@@ -93,7 +93,7 @@ Historical simulations on USDC/USDT swap data compare Oscillon against a static 
 
 ~18,500 chronological swaps with low volatility. Oscillon keeps fees near the 3 bps base while static and dynamic models earn similar total income (~$65k). The benefit shows up in the **3–7 bps deviation** bucket, where static LP capture drops to ~85% and Oscillon stays near 100%.
 
-![Backtest May 2026](docs/assets/backtest-2026-05.png)
+![Backtest May 2026](assets/backtest-2026-05.png)
 
 ### March 2023 — USDC depeg crisis
 
@@ -101,7 +101,7 @@ Historical simulations on USDC/USDT swap data compare Oscillon against a static 
 
 Chainlink-matched replay from March 10–16, 2023. As USDC depegged to ~1,200 bps, Oscillon scaled fees from 3 bps to the 50 bps cap while static stayed flat.
 
-![Depeg timeline March 2023](docs/assets/depeg-timeline-2023-03.png)
+![Depeg timeline March 2023](assets/depeg-timeline-2023-03.png)
 
 *Top: oracle depeg magnitude. Middle: static 3 bps vs Oscillon hybrid. Bottom: remaining arb gap after fee (drain protection proxy).*
 
@@ -109,13 +109,13 @@ Chainlink-matched replay from March 10–16, 2023. As USDC depegged to ~1,200 bp
 
 Fee curves, LVR distribution, cumulative LP income, and LP capture % over the March 2023 stress window. Income spikes around swap 2,500–3,500 when the depeg hit. Oscillon hybrid ends ~2× static (~$450k vs ~$215k) and holds 25–50% LP capture in the 15–30+ bps ranges where static collapses below 10%.
 
-![Backtest March 2023](docs/assets/backtest-2023-03.png)
+![Backtest March 2023](assets/backtest-2023-03.png)
 
 #### Model comparison (same period)
 
 Side-by-side fee models including hybrid, piecewise, quadratic (K=45), and additive (base + drain tax). Additive and paper-minimum benchmarks show the upper bound on LP protection.
 
-![Backtest results March 2023](docs/assets/backtest-results.png)
+![Backtest results March 2023](assets/backtest-results.png)
 
 > Backtests are illustrative simulations on historical data. On-chain behavior depends on oracle freshness, pool liquidity, and swap direction. See [Known Limitations](#known-limitations).
 
