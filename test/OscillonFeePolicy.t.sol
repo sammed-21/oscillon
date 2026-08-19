@@ -22,4 +22,13 @@ contract OscillonFeePolicyTest is Test {
     function test_piecewise_cappedAt50() public pure {
         assertEq(OscillonFeePolicy.piecewiseFeeBps(10_000), 50);
     }
+
+    function test_depegSurcharge_noFallbackDampening() public pure {
+        uint24 withFallback =
+            OscillonFeePolicy.depegSurchargePips(3, true, 6, 100);
+        uint24 withoutFallback =
+            OscillonFeePolicy.depegSurchargePips(3, false, 6, 100);
+        assertEq(withFallback, withoutFallback);
+        assertEq(withFallback, 300);
+    }
 }

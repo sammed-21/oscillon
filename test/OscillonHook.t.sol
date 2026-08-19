@@ -27,7 +27,10 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 import {MockV3Aggregator} from "./mock/MockV3Aggregator.sol";
 import {OscillonHook} from "../src/OscillonHook.sol";
-import {ChainlinkOracleAdapter} from "../src/oracle/adapters/ChainlinkOracleAdapter.sol";
+import {
+    ChainlinkOracleAdapter
+} from "../src/oracle/adapters/ChainlinkOracleAdapter.sol";
+import {OscillonConstants as C} from "../src/constants/OscillonConstants.sol";
 
 contract OscillonHookTwapTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
@@ -61,8 +64,16 @@ contract OscillonHookTwapTest is Test, Deployers {
 
         oracle0 = new MockV3Aggregator(18, int256(1e18));
         oracle1 = new MockV3Aggregator(18, int256(1e18));
-        adapter0 = new ChainlinkOracleAdapter(address(oracle0), address(0), 25 hours);
-        adapter1 = new ChainlinkOracleAdapter(address(oracle1), address(0), 25 hours);
+        adapter0 = new ChainlinkOracleAdapter(
+            address(oracle0),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
+        adapter1 = new ChainlinkOracleAdapter(
+            address(oracle1),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
 
         // v3.0 permissions: beforeSwap + afterInitialize + afterSwap.
         uint160 flags = uint160(
@@ -70,7 +81,11 @@ contract OscillonHookTwapTest is Test, Deployers {
                 Hooks.AFTER_INITIALIZE_FLAG |
                 Hooks.AFTER_SWAP_FLAG
         );
-        deployCodeTo("OscillonHook", abi.encode(manager, address(this)), address(flags));
+        deployCodeTo(
+            "OscillonHook",
+            abi.encode(manager, address(this)),
+            address(flags)
+        );
         hook = OscillonHook(payable(address(flags)));
 
         hook.approveAdapter(address(adapter0));
@@ -351,15 +366,27 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
 
         oracle0 = new MockV3Aggregator(18, int256(1e18));
         oracle1 = new MockV3Aggregator(18, int256(1e18));
-        adapter0 = new ChainlinkOracleAdapter(address(oracle0), address(0), 25 hours);
-        adapter1 = new ChainlinkOracleAdapter(address(oracle1), address(0), 25 hours);
+        adapter0 = new ChainlinkOracleAdapter(
+            address(oracle0),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
+        adapter1 = new ChainlinkOracleAdapter(
+            address(oracle1),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
 
         uint160 flags = uint160(
             Hooks.BEFORE_SWAP_FLAG |
                 Hooks.AFTER_INITIALIZE_FLAG |
                 Hooks.AFTER_SWAP_FLAG
         );
-        deployCodeTo("OscillonHook", abi.encode(manager, address(this)), address(flags));
+        deployCodeTo(
+            "OscillonHook",
+            abi.encode(manager, address(this)),
+            address(flags)
+        );
         hook = OscillonHook(payable(address(flags)));
 
         hook.approveAdapter(address(adapter0));
@@ -388,8 +415,12 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // Map oracle0/oracle1 to whichever currency they correspond to.
         bool stable0IsCurrency0 = Currency.unwrap(poolKey.currency0) ==
             address(stable0);
-        address oForC0 = stable0IsCurrency0 ? address(adapter0) : address(adapter1);
-        address oForC1 = stable0IsCurrency0 ? address(adapter1) : address(adapter0);
+        address oForC0 = stable0IsCurrency0
+            ? address(adapter0)
+            : address(adapter1);
+        address oForC1 = stable0IsCurrency0
+            ? address(adapter1)
+            : address(adapter0);
         sellStable1ZeroForOne = !stable0IsCurrency0; // sell stable1 → input is currency1 unless stable1 sorts first
 
         (bool ok, ) = address(hook).call(
@@ -423,7 +454,14 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // 0.9994 → 6 bps deviation; 3 bps base + 1 bps surcharge = 400 pips.
         oracle1.updateAnswer(int256(0.9994e18));
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 6, FEE_AT_6_BPS_DRAIN, AMOUNT_IN, true, false);
+        emit DepegDetected(
+            poolId,
+            6,
+            FEE_AT_6_BPS_DRAIN,
+            AMOUNT_IN,
+            true,
+            false
+        );
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -469,8 +507,8 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // which equals spot ($1) here, so depegBps = 0, fee = BASE_FEE.
         oracle1.updateAnswer(int256(0.95e18));
 
-        // Warp far past MAX_ORACLE_AGE (25h) so the staleness check trips.
-        vm.warp(block.timestamp + 26 hours);
+        // Warp past MAX_ORACLE_AGE (1h) so the staleness check trips.
+        vm.warp(block.timestamp + 2 hours);
         oracle1.setUpdatedAt(1); // belt-and-braces: force updatedAt firmly stale.
 
         vm.expectEmit(true, false, false, true, address(hook));
@@ -511,6 +549,50 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
             assertTrue(found, "expected inner ExactOutputDisabledDuringDepeg");
         }
         assertTrue(reverted, "swap should have reverted");
+    }
+
+    function test_getPoolState_returnsBothTokens() public {
+        oracle0.updateAnswer(int256(1e18));
+        oracle1.updateAnswer(int256(0.9994e18)); // 6 bps on input oracle
+
+        (bool ok, bytes memory data) = address(hook).staticcall(
+            abi.encodeWithSignature(
+                "getPoolState((address,address,uint24,int24,address))",
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks)
+            )
+        );
+        require(ok, "getPoolState failed");
+
+        (
+            bool registered,
+            uint256 depegBps0,
+            ,
+            ,
+            uint256 depegBps1,
+            ,
+            ,
+            ,
+            ,
+
+        ) = abi.decode(
+            data,
+            (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256)
+        );
+
+        assertTrue(registered);
+        bool stable0IsCurrency0 =
+            Currency.unwrap(poolKey.currency0) == address(stable0);
+        if (stable0IsCurrency0) {
+            assertEq(depegBps0, 0);
+            assertEq(depegBps1, 6);
+        } else {
+            assertEq(depegBps0, 6);
+            assertEq(depegBps1, 0);
+        }
     }
 
     /// @dev External wrapper so we can use try/catch on the swap.

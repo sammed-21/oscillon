@@ -67,7 +67,7 @@ Constants (`OscillonConstants.sol`):
 - `BASE_FEE_PIPS = 300` (3 bps)
 - `SMALL_DEPEG_BPS = 3` — dynamic path starts here
 - `MAX_FEE_PIPS = 5000` (50 bps)
-- `MAX_ORACLE_AGE = 25 hours`
+- `MAX_ORACLE_AGE = 1 hour` (aligned with intraday depeg / fee-curve horizon)
 - `ORACLE_DISAGREE_BPS = 20` — Chainlink vs TWAP blend threshold
 
 On each swap the hook emits:
@@ -185,14 +185,14 @@ The UI should show **three linked values** per swap:
 3. **Total fee** — base (3 bps) + surcharge, from `DepegDetected` or swap simulation
 
 Use `getDeployment(chainId)` from `oscillon-ui/src/deployment.config.ts`.  
-Fee quotes must be **per swap direction** — `getPoolState()` only reflects token0.
+Fee quotes must be **per swap direction** — use `depegBps0` / `depegBps1` from `getPoolState()` for the correct token.
 
 ---
 
 ## Security
 
 - Hook callbacks restricted to `PoolManager` via `BaseHook`
-- Chainlink staleness: `block.timestamp > updatedAt + 25h` → TWAP fallback
+- Chainlink staleness: `block.timestamp > updatedAt + 1h` → TWAP fallback
 - Oracle disagreement > 20 bps → conservative price (closer to $1)
 - Exact-output swaps disabled when `depegBps >= 3`
 - Rolling drain multiplier increases fee under sustained drain pressure
@@ -207,7 +207,7 @@ Liquidity add/remove is unrestricted (no hook on LP operations).
 `surplusAccrued` and `protocolAccrued` track theoretical surplus from dynamic fees but are not connected to actual v4 fee settlement. `collectProtocolFees` requires proper fee skimming via `donate()` or `afterSwapReturnDelta` for production.
 
 **Oracle latency**  
-TWAP window is 30 minutes. During fast depegs, TWAP can lag spot. Chainlink freshness uses a 25-hour `maxAge`.
+TWAP window is 30 minutes. During fast depegs, TWAP can lag spot. Chainlink freshness uses a 1-hour `maxAge` (then TWAP fallback).
 
 **K parameter**  
 `K_STANDARD = 45` used universally; thin-pool tier not yet wired to live liquidity reads.

@@ -398,12 +398,15 @@ contract OscillonHook is BaseHook {
         view
         returns (
             bool registered,
-            uint256 depegBps,
-            bool pegBelow,
+            uint256 depegBps0,
+            bool pegBelow0,
+            bool usingFallback0,
+            uint256 depegBps1,
+            bool pegBelow1,
+            bool usingFallback1,
             bool inRestoreWindow,
             uint256 surplusAccrued,
-            uint256 protocolAccrued,
-            bool usingFallback
+            uint256 protocolAccrued
         )
     {
         PoolConfig storage cfg = poolConfigs[key.toId()];
@@ -414,20 +417,44 @@ contract OscillonHook is BaseHook {
             cfg.lastHighDepegAt != 0 &&
             (block.timestamp - cfg.lastHighDepegAt) <= C.RESTORE_WINDOW;
 
-        if (!cfg.registered) return (false, 0, false, false, 0, 0, false);
+        if (!cfg.registered) {
+            return (false, 0, false, false, 0, false, false, false, 0, 0);
+        }
 
+        (depegBps0, pegBelow0, usingFallback0, depegBps1, pegBelow1, usingFallback1) =
+            _poolOracleSnapshot(key, cfg);
+    }
+
+    function _poolOracleSnapshot(PoolKey calldata key, PoolConfig storage cfg)
+        internal
+        view
+        returns (
+            uint256 depegBps0,
+            bool pegBelow0,
+            bool usingFallback0,
+            uint256 depegBps1,
+            bool pegBelow1,
+            bool usingFallback1
+        )
+    {
+        PoolId poolId = key.toId();
         uint256 twapPrice = OscillonTwapOracle.readTwapOrSpot(
             poolManager,
             key,
-            twapStates[key.toId()]
+            twapStates[poolId]
         );
-        PriceResult memory price = OscillonPriceEngine.getSellTokenPrice(
-            cfg.oracles0,
-            twapPrice
-        );
-        depegBps = price.depegBps;
-        pegBelow = price.pegBelow;
-        usingFallback = price.usingFallback;
+
+        PriceResult memory price0 =
+            OscillonPriceEngine.getSellTokenPrice(cfg.oracles0, twapPrice);
+        PriceResult memory price1 =
+            OscillonPriceEngine.getSellTokenPrice(cfg.oracles1, twapPrice);
+
+        depegBps0 = price0.depegBps;
+        pegBelow0 = price0.pegBelow;
+        usingFallback0 = price0.usingFallback;
+        depegBps1 = price1.depegBps;
+        pegBelow1 = price1.pegBelow;
+        usingFallback1 = price1.usingFallback;
     }
 
     function getPoolConfig(
