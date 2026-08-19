@@ -3,7 +3,9 @@ pragma solidity 0.8.26;
 
 import {IOscillonOracle} from "../IOscillonOracle.sol";
 import {IChainlinkSequencer} from "../IChainlinkSequencer.sol";
-import {IAggregatorV3Interface} from "../../interface/IAggregatorV3Interface.sol";
+import {
+    IAggregatorV3Interface
+} from "../../interface/IAggregatorV3Interface.sol";
 import {
     OracleAnswerInvalid,
     OracleStale,
@@ -27,7 +29,12 @@ contract ChainlinkOracleAdapter is IOscillonOracle {
         maxAge = _maxAge == 0 ? C.MAX_ORACLE_AGE : _maxAge;
     }
 
-    function getPrice() external view override returns (uint256 price1e18, uint256 confidence) {
+    function getPrice()
+        external
+        view
+        override
+        returns (uint256 price1e18, uint256 confidence)
+    {
         _assertSequencerUp();
         price1e18 = _readFeed();
         confidence = 0;
@@ -44,9 +51,11 @@ contract ChainlinkOracleAdapter is IOscillonOracle {
     function _assertSequencerUp() internal view {
         if (address(sequencer) == address(0)) return;
 
-        (, int256 seqAnswer, uint256 startedAt, , ) = sequencer.latestRoundData();
+        (, int256 seqAnswer, uint256 startedAt, , ) = sequencer
+            .latestRoundData();
         if (seqAnswer == 1) revert SequencerDown();
-        if (block.timestamp - startedAt < C.SEQUENCER_GRACE_PERIOD) revert SequencerDown();
+        if (block.timestamp - startedAt < C.SEQUENCER_GRACE_PERIOD)
+            revert SequencerDown();
     }
 
     function _readFeed() internal view returns (uint256 price1e18) {
@@ -59,8 +68,10 @@ contract ChainlinkOracleAdapter is IOscillonOracle {
         ) = feed.latestRoundData();
 
         if (answer <= 0) revert OracleAnswerInvalid();
-        if (answeredInRound < roundId) revert OracleRoundIncomplete(roundId, answeredInRound);
-        if (block.timestamp > updatedAt + maxAge) revert OracleStale(updatedAt, block.timestamp);
+        if (answeredInRound < roundId)
+            revert OracleRoundIncomplete(roundId, answeredInRound);
+        if (block.timestamp > updatedAt + maxAge)
+            revert OracleStale(updatedAt, block.timestamp);
 
         return (uint256(answer) * 1e18) / (10 ** uint256(feedDecimals));
     }

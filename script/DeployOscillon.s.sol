@@ -27,6 +27,7 @@ import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {HookMiner} from "v4-hooks-public/src/utils/HookMiner.sol";
 
 import {OscillonHook} from "../src/OscillonHook.sol";
+import {OscillonConstants as C} from "../src/constants/OscillonConstants.sol";
 import {ChainlinkOracleAdapter} from "../src/oracle/adapters/ChainlinkOracleAdapter.sol";
 import {MockV3Aggregator} from "../test/mock/MockV3Aggregator.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
@@ -51,7 +52,6 @@ contract DeployOscillon is Script {
     address constant USDC_ARBITRUM = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address constant USDT_ARBITRUM = 0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9;
 
-    uint256 constant MAX_ORACLE_AGE = 25 hours;
     uint160 constant SQRT_PRICE_1_1 = 79228162514264337593543950336;
 
     struct OracleBundle {
@@ -176,10 +176,10 @@ contract DeployOscillon is Script {
             o.usdcFeed = address(feed0);
             o.usdtFeed = address(feed1);
             o.usdcAdapter = address(
-                new ChainlinkOracleAdapter(o.usdcFeed, address(0), MAX_ORACLE_AGE)
+                new ChainlinkOracleAdapter(o.usdcFeed, address(0), C.MAX_ORACLE_AGE)
             );
             o.usdtAdapter = address(
-                new ChainlinkOracleAdapter(o.usdtFeed, address(0), MAX_ORACLE_AGE)
+                new ChainlinkOracleAdapter(o.usdtFeed, address(0), C.MAX_ORACLE_AGE)
             );
             return o;
         }
@@ -187,10 +187,10 @@ contract DeployOscillon is Script {
             o.usdcFeed = CL_USDC_USD_ARBITRUM_SEPOLIA;
             o.usdtFeed = CL_USDT_USD_ARBITRUM_SEPOLIA;
             o.usdcAdapter = address(
-                new ChainlinkOracleAdapter(o.usdcFeed, address(0), MAX_ORACLE_AGE)
+                new ChainlinkOracleAdapter(o.usdcFeed, address(0), C.MAX_ORACLE_AGE)
             );
             o.usdtAdapter = address(
-                new ChainlinkOracleAdapter(o.usdtFeed, address(0), MAX_ORACLE_AGE)
+                new ChainlinkOracleAdapter(o.usdtFeed, address(0), C.MAX_ORACLE_AGE)
             );
             return o;
         }
@@ -198,10 +198,10 @@ contract DeployOscillon is Script {
             o.usdcFeed = CL_USDC_USD_ARBITRUM;
             o.usdtFeed = CL_USDT_USD_ARBITRUM;
             o.usdcAdapter = address(
-                new ChainlinkOracleAdapter(o.usdcFeed, CL_SEQUENCER_ARBITRUM, MAX_ORACLE_AGE)
+                new ChainlinkOracleAdapter(o.usdcFeed, CL_SEQUENCER_ARBITRUM, C.MAX_ORACLE_AGE)
             );
             o.usdtAdapter = address(
-                new ChainlinkOracleAdapter(o.usdtFeed, CL_SEQUENCER_ARBITRUM, MAX_ORACLE_AGE)
+                new ChainlinkOracleAdapter(o.usdtFeed, CL_SEQUENCER_ARBITRUM, C.MAX_ORACLE_AGE)
             );
             return o;
         }

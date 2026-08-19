@@ -12,9 +12,10 @@ library OscillonConstants {
     uint256 internal constant SMALL_DEPEG_BPS = 3;
     uint256 internal constant QUADRATIC_DEAD_BAND = 3;
 
-    // Timing
+    // Timing — MAX_ORACLE_AGE aligned with fee-curve horizon (3–50 bps depegs are
+    // intraday events; stale Chainlink must not price drain swaps for hours).
     uint256 internal constant RESTORE_WINDOW = 1 hours;
-    uint256 internal constant MAX_ORACLE_AGE = 25 hours;
+    uint256 internal constant MAX_ORACLE_AGE = 1 hours;
     uint256 internal constant ORACLE_DISAGREE_BPS = 20;
     uint256 internal constant SEQUENCER_GRACE_PERIOD = 3600;
 

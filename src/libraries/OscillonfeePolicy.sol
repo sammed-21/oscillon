@@ -44,22 +44,16 @@ library OscillonFeePolicy {
         return feeBps > C.MAX_FEE_BPS ? C.MAX_FEE_BPS : feeBps;
     }
 
-    /// @notice Depeg surcharge in pips (excludes BASE_FEE_PIPS). TWAP-fallback dampening
-    ///         and rolling multiplier apply to the surcharge component only.
+    /// @notice Depeg surcharge in pips (excludes BASE_FEE_PIPS). Rolling multiplier
+    ///         applies to the surcharge component only. TWAP fallback uses the
+    ///         full surcharge — no dampening (uncertain oracle ≠ cheaper drains).
     function depegSurchargePips(
         uint256 feeBps,
-        bool usingFallback,
-        uint256 depegBps,
+        bool,
+        uint256,
         uint256 rollingMult
     ) internal pure returns (uint24 surchargePips) {
-        uint256 adjusted = feeBps;
-
-        if (usingFallback && depegBps < 15) {
-            uint256 increase = adjusted > 1 ? adjusted - 1 : 0;
-            adjusted = 1 + (increase / 2);
-        }
-
-        adjusted = (adjusted * rollingMult) / 100;
+        uint256 adjusted = (feeBps * rollingMult) / 100;
         uint256 pips = adjusted * 100;
         surchargePips = uint24(pips > C.MAX_FEE_PIPS ? C.MAX_FEE_PIPS : pips);
     }
