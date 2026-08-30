@@ -3,15 +3,8 @@ pragma solidity 0.8.26;
 
 import {IOscillonOracle} from "../IOscillonOracle.sol";
 import {IChainlinkSequencer} from "../IChainlinkSequencer.sol";
-import {
-    IAggregatorV3Interface
-} from "../../interface/IAggregatorV3Interface.sol";
-import {
-    OracleAnswerInvalid,
-    OracleStale,
-    OracleRoundIncomplete,
-    SequencerDown
-} from "../../errors/OscillonErrors.sol";
+import {IAggregatorV3Interface} from "../../interface/IAggregatorV3Interface.sol";
+import {OracleAnswerInvalid, OracleStale, OracleRoundIncomplete, SequencerDown} from "../../errors/OscillonErrors.sol";
 import {OscillonConstants as C} from "../../constants/OscillonConstants.sol";
 
 /// @title ChainlinkOracleAdapter
