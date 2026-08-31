@@ -18,3 +18,4 @@ error ExactOutputDisabledDuringDepeg(uint256 depegBps);
 error SwapCapExceeded();
 error TransferFailed();
 error SequencerDown();
+error OracleAnswerAtBound(int256 answer, int256 minAnswer, int256 maxAnswer);

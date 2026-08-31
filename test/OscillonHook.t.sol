@@ -623,3 +623,159 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         );
     }
 }
+
+/// @notice Isolated from OscillonHookDepegFeeTest because minAnswer/maxAnswer
+/// bounds are cached as immutables at ChainlinkOracleAdapter construction
+/// time (mirrors real Chainlink: an aggregator's bounds are fixed for its
+/// lifetime — Chainlink deploys a NEW aggregator behind the proxy to change
+/// them). The mock must therefore be configured with its floor/ceiling
+/// BEFORE the adapter is built, which means this needs its own setUp()
+/// rather than reusing the shared fixture.
+contract OscillonHookAnswerBoundTest is Test, Deployers {
+    using PoolIdLibrary for PoolKey;
+
+    event DepegDetected(
+        bytes32 indexed poolId,
+        uint256 depegBps,
+        uint24 feeApplied,
+        uint256 swapSize,
+        bool isDrain,
+        bool usingFallback
+    );
+
+    uint24 constant BASE_FEE = 300;
+    uint256 constant AMOUNT_IN = 1e15;
+
+    MockERC20 stable0;
+    MockERC20 stable1;
+    MockV3Aggregator oracle0;
+    MockV3Aggregator oracle1;
+    ChainlinkOracleAdapter adapter0;
+    ChainlinkOracleAdapter adapter1;
+    OscillonHook hook;
+    PoolKey poolKey;
+    bytes32 poolId;
+    bool sellStable1ZeroForOne;
+
+    function setUp() public {
+        deployFreshManagerAndRouters();
+
+        stable0 = new MockERC20("USD Coin", "USDC", 18);
+        stable1 = new MockERC20("Tether", "USDT", 18);
+        stable0.mint(address(this), type(uint128).max);
+        stable1.mint(address(this), type(uint128).max);
+        stable0.approve(address(swapRouter), type(uint128).max);
+        stable1.approve(address(swapRouter), type(uint128).max);
+        stable0.approve(address(modifyLiquidityRouter), type(uint128).max);
+        stable1.approve(address(modifyLiquidityRouter), type(uint128).max);
+
+        oracle0 = new MockV3Aggregator(18, int256(1e18));
+        // oracle1 pinned exactly at a $0.10 floor from the start — the
+        // LUNA/UST saturation scenario, not a live depeg that later hits it.
+        oracle1 = new MockV3Aggregator(18, int256(0.10e18));
+        oracle1.setAnswerBounds(int192(0.10e18), type(int192).max);
+
+        adapter0 = new ChainlinkOracleAdapter(
+            address(oracle0),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
+        adapter1 = new ChainlinkOracleAdapter(
+            address(oracle1),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
+
+        uint160 flags = uint160(
+            Hooks.BEFORE_SWAP_FLAG |
+                Hooks.AFTER_INITIALIZE_FLAG |
+                Hooks.AFTER_SWAP_FLAG
+        );
+        deployCodeTo(
+            "OscillonHook",
+            abi.encode(manager, address(this)),
+            address(flags)
+        );
+        hook = OscillonHook(payable(address(flags)));
+
+        hook.approveAdapter(address(adapter0));
+        hook.approveAdapter(address(adapter1));
+
+        Currency c0 = Currency.wrap(address(stable0));
+        Currency c1 = Currency.wrap(address(stable1));
+        if (Currency.unwrap(c0) > Currency.unwrap(c1)) (c0, c1) = (c1, c0);
+
+        (poolKey, ) = initPool(
+            c0,
+            c1,
+            IHooks(address(hook)),
+            LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            int24(1),
+            SQRT_PRICE_1_1
+        );
+        poolId = PoolId.unwrap(poolKey.toId());
+
+        modifyLiquidityRouter.modifyLiquidity(
+            poolKey,
+            LIQUIDITY_PARAMS,
+            ZERO_BYTES
+        );
+
+        bool stable0IsCurrency0 = Currency.unwrap(poolKey.currency0) ==
+            address(stable0);
+        address oForC0 = stable0IsCurrency0
+            ? address(adapter0)
+            : address(adapter1);
+        address oForC1 = stable0IsCurrency0
+            ? address(adapter1)
+            : address(adapter0);
+        sellStable1ZeroForOne = !stable0IsCurrency0;
+
+        (bool ok, ) = address(hook).call(
+            abi.encodeWithSignature(
+                "registerPool((address,address,uint24,int24,address),address,address,uint8,uint8)",
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks),
+                oForC0,
+                oForC1,
+                uint8(18),
+                uint8(18)
+            )
+        );
+        require(ok, "registerPool failed");
+    }
+
+    // ── Chainlink pinned at its answer floor → falls back to TWAP ───────────
+
+    function test_chainlinkAtAnswerFloor_FallsBackToTWAP() public {
+        // updatedAt is fresh (not stale) — only the minAnswer circuit
+        // breaker in ChainlinkOracleAdapter can catch this; staleness alone
+        // would not, since the aggregator keeps "updating" at its clamp.
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true); // usingFallback = true
+        _swap(int256(-int256(AMOUNT_IN)));
+    }
+
+    function _swap(int256 amountSpecified) internal {
+        uint160 sqrtPriceLimitX96 = sellStable1ZeroForOne
+            ? (TickMath.MIN_SQRT_PRICE + 1)
+            : (TickMath.MAX_SQRT_PRICE - 1);
+
+        swapRouter.swap(
+            poolKey,
+            IPoolManager.SwapParams({
+                zeroForOne: sellStable1ZeroForOne,
+                amountSpecified: amountSpecified,
+                sqrtPriceLimitX96: sqrtPriceLimitX96
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ""
+        );
+    }
+}

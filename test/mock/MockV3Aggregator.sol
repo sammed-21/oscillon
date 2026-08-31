@@ -8,10 +8,33 @@ contract MockV3Aggregator {
     int256 private _answer;
     uint256 private _updatedAt;
 
+    // minAnswer/maxAnswer circuit breaker support. Defaults to (almost) the
+    // full int192 range so existing tests are unaffected unless a test
+    // explicitly narrows the bounds. Mock acts as its own "aggregator" (no
+    // proxy indirection) — ChainlinkOracleAdapter's aggregator() lookup will
+    // revert against this contract and fall back to querying it directly,
+    // same as a real non-proxied aggregator.
+    int192 private _minAnswer = type(int192).min;
+    int192 private _maxAnswer = type(int192).max;
+
     constructor(uint8 decimals_, int256 answer_) {
         _decimals = decimals_;
         _answer = answer_;
         _updatedAt = block.timestamp;
+    }
+
+    function minAnswer() external view returns (int192) {
+        return _minAnswer;
+    }
+
+    function maxAnswer() external view returns (int192) {
+        return _maxAnswer;
+    }
+
+    /// @notice For testing the minAnswer/maxAnswer circuit breaker.
+    function setAnswerBounds(int192 min_, int192 max_) external {
+        _minAnswer = min_;
+        _maxAnswer = max_;
     }
 
     function decimals() external view returns (uint8) {
