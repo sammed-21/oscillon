@@ -24,7 +24,8 @@ import {
     SwapContext,
     Observation,
     TwapState,
-    PriceResult
+    PriceResult,
+    PoolOracleSnapshot
 } from "./types/OscillonTypes.sol";
 import {
     NotOwner,
@@ -57,7 +58,8 @@ contract OscillonHook is BaseHook {
         uint24 feeApplied,
         uint256 swapSize,
         bool isDrain,
-        bool usingFallback
+        bool usingFallback,
+        bool twapWarmedUp
     );
     event PoolRegistered(
         PoolId indexed poolId,
@@ -256,7 +258,8 @@ contract OscillonHook is BaseHook {
             fee,
             ctx.swapSize,
             ctx.isDrain,
-            ctx.usingFallback
+            ctx.usingFallback,
+            ctx.twapWarmedUp
         );
 
         return (
@@ -307,7 +310,11 @@ contract OscillonHook is BaseHook {
         TokenOracleConfig memory tokenOracles = tokenInIsToken0
             ? cfg.oracles0
             : cfg.oracles1;
-        uint256 twapPrice = OscillonTwapOracle.readTwapOrSpot(
+        // Fee behavior is unchanged whether or not the TWAP is warmed up
+        // (see OscillonFeePolicy: fallback pricing intentionally gets no
+        // discount) — twapWarmedUp is carried into ctx purely so it can be
+        // emitted in DepegDetected for monitoring visibility.
+        (uint256 twapPrice, bool twapWarmedUp) = OscillonTwapOracle.readTwapOrSpot(
             poolManager,
             key,
             twapStates[key.toId()]
@@ -328,7 +335,8 @@ contract OscillonHook is BaseHook {
             priceSource: price.source,
             amountSpecified: params.amountSpecified,
             swapSize: swapSize,
-            tokenInIsToken0: tokenInIsToken0
+            tokenInIsToken0: tokenInIsToken0,
+            twapWarmedUp: twapWarmedUp
         });
     }
 
@@ -410,7 +418,8 @@ contract OscillonHook is BaseHook {
             bool usingFallback1,
             bool inRestoreWindow,
             uint256 surplusAccrued,
-            uint256 protocolAccrued
+            uint256 protocolAccrued,
+            bool twapWarmedUp
         )
     {
         PoolConfig storage cfg = poolConfigs[key.toId()];
@@ -422,27 +431,31 @@ contract OscillonHook is BaseHook {
             (block.timestamp - cfg.lastHighDepegAt) <= C.RESTORE_WINDOW;
 
         if (!cfg.registered) {
-            return (false, 0, false, false, 0, false, false, false, 0, 0);
+            return (false, 0, false, false, 0, false, false, false, 0, 0, false);
         }
 
-        (depegBps0, pegBelow0, usingFallback0, depegBps1, pegBelow1, usingFallback1) =
-            _poolOracleSnapshot(key, cfg);
+        PoolOracleSnapshot memory snap = _poolOracleSnapshot(key, cfg);
+        depegBps0 = snap.depegBps0;
+        pegBelow0 = snap.pegBelow0;
+        usingFallback0 = snap.usingFallback0;
+        depegBps1 = snap.depegBps1;
+        pegBelow1 = snap.pegBelow1;
+        usingFallback1 = snap.usingFallback1;
+        twapWarmedUp = snap.twapWarmedUp;
     }
 
+    /// @dev `twapWarmedUp` is reporting-only (see OscillonTwapOracle.readTwapOrSpot):
+    ///      when false, any price with source == TWAP here is raw spot, not a
+    ///      real windowed average — most exposed right after pool registration,
+    ///      before TWAP_WINDOW seconds of trading history exist. Fee behavior
+    ///      is unaffected either way; this lets a frontend or monitor flag it.
     function _poolOracleSnapshot(PoolKey calldata key, PoolConfig storage cfg)
         internal
         view
-        returns (
-            uint256 depegBps0,
-            bool pegBelow0,
-            bool usingFallback0,
-            uint256 depegBps1,
-            bool pegBelow1,
-            bool usingFallback1
-        )
+        returns (PoolOracleSnapshot memory snap)
     {
         PoolId poolId = key.toId();
-        uint256 twapPrice = OscillonTwapOracle.readTwapOrSpot(
+        (uint256 twapPrice, bool twapWarmedUp) = OscillonTwapOracle.readTwapOrSpot(
             poolManager,
             key,
             twapStates[poolId]
@@ -453,12 +466,13 @@ contract OscillonHook is BaseHook {
         PriceResult memory price1 =
             OscillonPriceEngine.getSellTokenPrice(cfg.oracles1, twapPrice);
 
-        depegBps0 = price0.depegBps;
-        pegBelow0 = price0.pegBelow;
-        usingFallback0 = price0.usingFallback;
-        depegBps1 = price1.depegBps;
-        pegBelow1 = price1.pegBelow;
-        usingFallback1 = price1.usingFallback;
+        snap.twapWarmedUp = twapWarmedUp;
+        snap.depegBps0 = price0.depegBps;
+        snap.pegBelow0 = price0.pegBelow;
+        snap.usingFallback0 = price0.usingFallback;
+        snap.depegBps1 = price1.depegBps;
+        snap.pegBelow1 = price1.pegBelow;
+        snap.usingFallback1 = price1.usingFallback;
     }
 
     function getPoolConfig(

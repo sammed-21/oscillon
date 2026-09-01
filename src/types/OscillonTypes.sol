@@ -42,6 +42,7 @@ struct SwapContext {
     int256 amountSpecified;
     uint256 swapSize;
     bool tokenInIsToken0;
+    bool twapWarmedUp;
 }
 
 /// @notice Oracle source for the final price (1=Chainlink, 2=TWAP)
@@ -51,4 +52,18 @@ struct PriceResult {
     bool pegBelow;
     bool usingFallback;
     uint8 source;
+}
+
+/// @notice getPoolState()'s per-token snapshot, bundled into a struct so the
+///         hook's view functions don't blow the EVM stack-depth limit when
+///         unpacking it (7 loose return values on top of getPoolState's own
+///         11 named returns triggers "stack too deep").
+struct PoolOracleSnapshot {
+    uint256 depegBps0;
+    bool pegBelow0;
+    bool usingFallback0;
+    uint256 depegBps1;
+    bool pegBelow1;
+    bool usingFallback1;
+    bool twapWarmedUp;
 }
