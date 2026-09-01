@@ -51,10 +51,17 @@ library OscillonTwapOracle {
         if (card < C.OBS_CARDINALITY) state.obsCardinality = card + 1;
     }
 
+    /// @return price1e18 the TWAP price, or raw spot if the ring buffer
+    ///         hasn't accumulated a full TWAP_WINDOW of history yet.
+    /// @return warmedUp true only when `price1e18` is a real windowed
+    ///         average — false whenever it's actually raw spot (freshly
+    ///         registered pool, or fewer than TWAP_WINDOW seconds of
+    ///         observations so far). Reporting-only: does not change fee
+    ///         behavior on its own; callers decide what to do with it.
     function readTwapOrSpot(IPoolManager poolManager, PoolKey calldata key, TwapState storage state)
         internal
         view
-        returns (uint256 price1e18)
+        returns (uint256 price1e18, bool warmedUp)
     {
         PoolId poolId = key.toId();
         (uint160 sqrtPriceX96Now, int24 currentTick, , ) = poolManager.getSlot0(poolId);
@@ -62,7 +69,7 @@ library OscillonTwapOracle {
         uint16 card = state.obsCardinality;
         uint16 newestIdx = state.obsIndex;
 
-        if (card == 0) return priceFromSqrtX96(sqrtPriceX96Now);
+        if (card == 0) return (priceFromSqrtX96(sqrtPriceX96Now), false);
 
         Observation memory newest = state.observations[newestIdx];
         uint32 nowTs = uint32(block.timestamp);
@@ -74,7 +81,7 @@ library OscillonTwapOracle {
         Observation memory oldest = state.observations[oldestIdx];
 
         if (nowTs - oldest.blockTimestamp < C.TWAP_WINDOW) {
-            return priceFromSqrtX96(sqrtPriceX96Now);
+            return (priceFromSqrtX96(sqrtPriceX96Now), false);
         }
 
         uint32 target = nowTs - C.TWAP_WINDOW;
@@ -86,7 +93,7 @@ library OscillonTwapOracle {
             avgTick--;
         }
 
-        return priceFromSqrtX96(TickMath.getSqrtPriceAtTick(avgTick));
+        return (priceFromSqrtX96(TickMath.getSqrtPriceAtTick(avgTick)), true);
     }
 
     function observeAt(TwapState storage state, uint32 target, uint16 card, uint16 newestIdx)

@@ -79,9 +79,12 @@ event DepegDetected(
     uint24 feeApplied,
     uint256 swapSize,
     bool isDrain,
-    bool usingFallback
+    bool usingFallback,
+    bool twapWarmedUp
 );
 ```
+
+`twapWarmedUp` is reporting-only — it does not change `feeApplied`. It's `false` whenever the TWAP ring buffer hasn't spanned the full 30-minute `TWAP_WINDOW` yet (freshly registered pools, or any read before enough history has accumulated), meaning any TWAP-sourced price in this swap was raw spot, not a real windowed average. See [Known Limitations](#known-limitations) and `THREAT_MODEL.md` §1.2.
 
 ---
 
