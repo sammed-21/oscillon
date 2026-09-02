@@ -242,7 +242,11 @@ contract OscillonHook is BaseHook {
             ? cfg.maxDepegSwap0
             : cfg.maxDepegSwap1;
         uint256 cap = _min(maxAbsolute, (uint256(liquidity) * 50) / 10_000);
-        if (ctx.isDrain && ctx.swapSize > cap) revert SwapCapExceeded();
+        if (
+            ctx.isDrain &&
+            ctx.depegBps >= C.CAP_DEPEG_BPS &&
+            ctx.swapSize > cap
+        ) revert SwapCapExceeded();
 
         uint24 fee = _selectFee(poolId, cfg, ctx);
 
