@@ -163,7 +163,8 @@ contract OscillonHookInvariants is Test, Deployers {
         uint256 swapSize,
         bool isDrain,
         bool usingFallback,
-        bool twapWarmedUp
+        bool twapWarmedUp,
+        bool tokenInIsToken0
     );
 
     uint256 constant MIN_AMOUNT = 1e12;
@@ -339,7 +340,7 @@ contract OscillonHookInvariants is Test, Deployers {
 
     function _captureFee() internal {
         bytes32 topic0 = keccak256(
-            "DepegDetected(bytes32,uint256,uint24,uint256,bool,bool,bool)"
+            "DepegDetected(bytes32,uint256,uint24,uint256,bool,bool,bool,bool)"
         );
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; i++) {
@@ -347,9 +348,9 @@ contract OscillonHookInvariants is Test, Deployers {
             if (logs[i].topics.length == 0 || logs[i].topics[0] != topic0) {
                 continue;
             }
-            (, uint24 feeApplied, , , , ) = abi.decode(
+            (, uint24 feeApplied, , , , , ) = abi.decode(
                 logs[i].data,
-                (uint256, uint24, uint256, bool, bool, bool)
+                (uint256, uint24, uint256, bool, bool, bool, bool)
             );
             if (feeApplied > maxFeeSeen) maxFeeSeen = feeApplied;
             if (feeApplied < minFeeSeen) minFeeSeen = feeApplied;

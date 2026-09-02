@@ -59,7 +59,8 @@ contract OscillonHook is BaseHook {
         uint256 swapSize,
         bool isDrain,
         bool usingFallback,
-        bool twapWarmedUp
+        bool twapWarmedUp,
+        bool tokenInIsToken0
     );
     event PoolRegistered(
         PoolId indexed poolId,
@@ -259,7 +260,8 @@ contract OscillonHook is BaseHook {
             ctx.swapSize,
             ctx.isDrain,
             ctx.usingFallback,
-            ctx.twapWarmedUp
+            ctx.twapWarmedUp,
+            ctx.tokenInIsToken0
         );
 
         return (
