@@ -62,14 +62,15 @@ contract DeployOscillon is Script {
     address constant CL_USDE_USD_SEPOLIA = 0x55ec7c3ed0d7CB5DF4d3d8bfEd2ecaf28b4638fb;
     // USDC/USD — verified live via description()=="USDC / USD" and a fresh
     // updatedAt timestamp, 2026-09-02.
-    address constant CL_USDC_USD_SEPOLIA = 0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E;
-    // NOTE: no USDT/USD Sepolia feed address here — every candidate found while
-    // researching this either had no bytecode on Sepolia (mainnet-only) or
-    // couldn't be confirmed. The Sepolia branch below deploys a USDe/USDC pool,
-    // not USDe/USDT. If you need a real USDT/USD Sepolia feed, verify one
-    // yourself at data.chain.link (filter: Ethereum Sepolia) and confirm on-chain
-    // via `cast call <addr> "description()(string)" --rpc-url <sepolia-rpc>`
-    // before trusting it — do not paste an unverified address in here.
+    // RedStone-on-Chainlink-interface feeds — verified via description()/
+    // decimals()/latestRoundData() on-chain, 2026-09-02. No native Chainlink
+    // USDT/USD or USDC/USD feed exists on Sepolia; RedStone fills that gap.
+    address constant RS_USDC_USD_SEPOLIA = 0xAd1A270a3F7FF685B90445d9da3EE7Eb22F8A1Ec;
+    address constant RS_USDT_USD_SEPOLIA = 0xE333acACEb88B2995a06f8Af689E8e17D6C1551A;
+    // RedStone's heartbeat here is ~6h, not Chainlink's ~1h — C.MAX_ORACLE_AGE
+    // is tuned for Chainlink and would treat a perfectly on-schedule RedStone
+    // update as stale 5 of every 6 hours. 7h gives one heartbeat of margin.
+    uint256 constant RS_MAX_AGE = 7 hours;
 
     uint160 constant SQRT_PRICE_1_1 = 79228162514264337593543950336;
 
@@ -102,6 +103,22 @@ contract DeployOscillon is Script {
         uint256 chainId = block.chainid;
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
+
+        if (chainId == 11155111) {
+            vm.startBroadcast(deployerKey);
+            MultiPoolOutput memory mp = _deployMultiPoolSepolia(deployer);
+            vm.stopBroadcast();
+            _writeMultiPoolDeploymentJson(mp);
+            console2.log("=== Oscillon multi-pool deploy complete (Sepolia) ===");
+            console2.log("OscillonHook:", mp.hook);
+            console2.log("USDC/USDT poolId:");
+            console2.logBytes32(mp.usdcUsdtPoolId);
+            console2.log("USDe/USDC poolId:");
+            console2.logBytes32(mp.usdeUsdcPoolId);
+            console2.log("USDe/USDT poolId:");
+            console2.logBytes32(mp.usdeUsdtPoolId);
+            return;
+        }
 
         vm.startBroadcast(deployerKey);
         DeployOutput memory out = _deploy(chainId, deployer);
@@ -193,18 +210,6 @@ contract DeployOscillon is Script {
             return (address(mockUsdc), address(mockUsdt), 6, 6);
         }
         if (chainId == 42161) return (USDC_ARBITRUM, USDT_ARBITRUM, 6, 6);
-        if (chainId == 11155111) {
-            // No verified real USDe/USDC token contracts on Sepolia — mint
-            // mocks priced by the real Chainlink feeds below, same pattern
-            // already used for 31337/421614. Decimals match the real assets
-            // (USDe: 18, USDC: 6) so maxDepegSwap scaling in registerPool is
-            // correct — this is NOT the same 6/6 as the other branches.
-            MockERC20 mockUsde = new MockERC20("Ethena USDe", "USDe", 18);
-            MockERC20 mockUsdc2 = new MockERC20("USD Coin", "USDC", 6);
-            mockUsde.mint(deployer, 1_000_000 * 1e18);
-            mockUsdc2.mint(deployer, 1_000_000 * 1e6);
-            return (address(mockUsde), address(mockUsdc2), 18, 6);
-        }
         revert("DeployOscillon: unsupported chainId");
     }
 
@@ -241,20 +246,6 @@ contract DeployOscillon is Script {
             );
             o.usdtAdapter = address(
                 new ChainlinkOracleAdapter(o.usdtFeed, CL_SEQUENCER_ARBITRUM, C.MAX_ORACLE_AGE)
-            );
-            return o;
-        }
-        if (chainId == 11155111) {
-            // "usdcFeed"/"usdcAdapter" here actually price USDe (see _tokens);
-            // "usdtFeed"/"usdtAdapter" price USDC. Reusing the generic field
-            // names to keep this diff small rather than renaming the struct.
-            o.usdcFeed = CL_USDE_USD_SEPOLIA;
-            o.usdtFeed = CL_USDC_USD_SEPOLIA;
-            o.usdcAdapter = address(
-                new ChainlinkOracleAdapter(o.usdcFeed, address(0), C.MAX_ORACLE_AGE)
-            );
-            o.usdtAdapter = address(
-                new ChainlinkOracleAdapter(o.usdtFeed, address(0), C.MAX_ORACLE_AGE)
             );
             return o;
         }
@@ -364,5 +355,162 @@ contract DeployOscillon is Script {
         if (chainId == 42161) return "arbitrum";
         if (chainId == 11155111) return "ethereum-sepolia";
         return "unknown";
+    }
+
+    // ── Sepolia: 3 pools (USDC/USDT, USDe/USDC, USDe/USDT) sharing 3 tokens ──
+
+    struct TokenSpec {
+        address token;
+        address adapter;
+        uint8 decimals;
+    }
+
+    struct MultiPoolOutput {
+        address deployer;
+        address poolManager;
+        address swapRouter;
+        address liquidityRouter;
+        address hook;
+        address usde;
+        address usdc;
+        address usdt;
+        address usdeAdapter;
+        address usdcAdapter;
+        address usdtAdapter;
+        PoolKey usdcUsdtKey;
+        bytes32 usdcUsdtPoolId;
+        PoolKey usdeUsdcKey;
+        bytes32 usdeUsdcPoolId;
+        PoolKey usdeUsdtKey;
+        bytes32 usdeUsdtPoolId;
+    }
+
+    function _deployMultiPoolSepolia(address deployer) internal returns (MultiPoolOutput memory out) {
+        out.deployer = deployer;
+        out.poolManager = PM_SEPOLIA;
+        IPoolManager poolManager = IPoolManager(PM_SEPOLIA);
+
+        out.swapRouter = address(new PoolSwapTest(poolManager));
+        out.liquidityRouter = address(new PoolModifyLiquidityTest(poolManager));
+
+        MockERC20 usde = new MockERC20("Ethena USDe", "USDe", 18);
+        MockERC20 usdc = new MockERC20("USD Coin", "USDC", 6);
+        MockERC20 usdt = new MockERC20("Tether USD", "USDT", 6);
+        usde.mint(deployer, 1_000_000 * 1e18);
+        usdc.mint(deployer, 1_000_000 * 1e6);
+        usdt.mint(deployer, 1_000_000 * 1e6);
+        usde.approve(out.swapRouter, type(uint256).max);
+        usdc.approve(out.swapRouter, type(uint256).max);
+        usdt.approve(out.swapRouter, type(uint256).max);
+        usde.approve(out.liquidityRouter, type(uint256).max);
+        usdc.approve(out.liquidityRouter, type(uint256).max);
+        usdt.approve(out.liquidityRouter, type(uint256).max);
+
+        // USDe priced by Chainlink; USDC/USDT priced by RedStone (no native
+        // Chainlink feed for either on Sepolia) — both expose a
+        // latestRoundData()-compatible interface, so the same adapter works.
+        out.usdeAdapter = address(new ChainlinkOracleAdapter(CL_USDE_USD_SEPOLIA, address(0), C.MAX_ORACLE_AGE));
+        out.usdcAdapter = address(new ChainlinkOracleAdapter(RS_USDC_USD_SEPOLIA, address(0), RS_MAX_AGE));
+        out.usdtAdapter = address(new ChainlinkOracleAdapter(RS_USDT_USD_SEPOLIA, address(0), RS_MAX_AGE));
+
+        out.hook = _deployHook(poolManager, deployer);
+        OscillonHook hook = OscillonHook(payable(out.hook));
+        hook.approveAdapter(out.usdeAdapter);
+        hook.approveAdapter(out.usdcAdapter);
+        hook.approveAdapter(out.usdtAdapter);
+
+        TokenSpec memory usdeSpec = TokenSpec(address(usde), out.usdeAdapter, 18);
+        TokenSpec memory usdcSpec = TokenSpec(address(usdc), out.usdcAdapter, 6);
+        TokenSpec memory usdtSpec = TokenSpec(address(usdt), out.usdtAdapter, 6);
+
+        (out.usdcUsdtKey, out.usdcUsdtPoolId) =
+            _buildAndRegisterPool(hook, poolManager, out.hook, out.liquidityRouter, usdcSpec, usdtSpec);
+        (out.usdeUsdcKey, out.usdeUsdcPoolId) =
+            _buildAndRegisterPool(hook, poolManager, out.hook, out.liquidityRouter, usdeSpec, usdcSpec);
+        (out.usdeUsdtKey, out.usdeUsdtPoolId) =
+            _buildAndRegisterPool(hook, poolManager, out.hook, out.liquidityRouter, usdeSpec, usdtSpec);
+
+        out.usde = address(usde);
+        out.usdc = address(usdc);
+        out.usdt = address(usdt);
+    }
+
+    function _buildAndRegisterPool(
+        OscillonHook hook,
+        IPoolManager poolManager,
+        address hookAddr,
+        address liquidityRouter,
+        TokenSpec memory a,
+        TokenSpec memory b
+    ) internal returns (PoolKey memory key, bytes32 poolId) {
+        (address c0, address c1, address oracle0, address oracle1, uint8 dec0, uint8 dec1) = a.token < b.token
+            ? (a.token, b.token, a.adapter, b.adapter, a.decimals, b.decimals)
+            : (b.token, a.token, b.adapter, a.adapter, b.decimals, a.decimals);
+
+        key = PoolKey({
+            currency0: Currency.wrap(c0),
+            currency1: Currency.wrap(c1),
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            tickSpacing: int24(1),
+            hooks: IHooks(hookAddr)
+        });
+
+        poolManager.initialize(key, SQRT_PRICE_1_1);
+        poolId = PoolId.unwrap(key.toId());
+
+        PoolModifyLiquidityTest(liquidityRouter).modifyLiquidity(
+            key,
+            ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 1e12, salt: bytes32(0)}),
+            ""
+        );
+
+        hook.registerPool(key, oracle0, oracle1, dec0, dec1);
+    }
+
+    function _writeMultiPoolDeploymentJson(MultiPoolOutput memory out) internal {
+        string memory root = "mpDeployment";
+        vm.serializeUint(root, "chainId", uint256(11155111));
+        vm.serializeString(root, "chainName", "ethereum-sepolia");
+        vm.serializeString(root, "deployedAt", vm.toString(block.timestamp));
+        vm.serializeAddress(root, "deployer", out.deployer);
+        vm.serializeAddress(root, "poolManager", out.poolManager);
+        vm.serializeAddress(root, "swapRouter", out.swapRouter);
+        vm.serializeAddress(root, "liquidityRouter", out.liquidityRouter);
+        vm.serializeAddress(root, "oscillonHook", out.hook);
+        vm.serializeAddress(root, "usde", out.usde);
+        vm.serializeAddress(root, "usdc", out.usdc);
+        vm.serializeAddress(root, "usdt", out.usdt);
+        vm.serializeAddress(root, "usdeAdapter", out.usdeAdapter);
+        vm.serializeAddress(root, "usdcAdapter", out.usdcAdapter);
+        vm.serializeAddress(root, "usdtAdapter", out.usdtAdapter);
+        vm.serializeAddress(root, "usdeFeed", CL_USDE_USD_SEPOLIA);
+        vm.serializeAddress(root, "usdcFeed", RS_USDC_USD_SEPOLIA);
+        vm.serializeAddress(root, "usdtFeed", RS_USDT_USD_SEPOLIA);
+
+        vm.serializeAddress(root, "usdcUsdt_currency0", Currency.unwrap(out.usdcUsdtKey.currency0));
+        vm.serializeAddress(root, "usdcUsdt_currency1", Currency.unwrap(out.usdcUsdtKey.currency1));
+        vm.serializeBytes32(root, "usdcUsdt_poolId", out.usdcUsdtPoolId);
+
+        vm.serializeAddress(root, "usdeUsdc_currency0", Currency.unwrap(out.usdeUsdcKey.currency0));
+        vm.serializeAddress(root, "usdeUsdc_currency1", Currency.unwrap(out.usdeUsdcKey.currency1));
+        vm.serializeBytes32(root, "usdeUsdc_poolId", out.usdeUsdcPoolId);
+
+        vm.serializeAddress(root, "usdeUsdt_currency0", Currency.unwrap(out.usdeUsdtKey.currency0));
+        vm.serializeAddress(root, "usdeUsdt_currency1", Currency.unwrap(out.usdeUsdtKey.currency1));
+        string memory json = vm.serializeBytes32(root, "usdeUsdt_poolId", out.usdeUsdtPoolId);
+
+        string memory projectRoot = vm.projectRoot();
+        string memory rootPath = string.concat(projectRoot, "/deployment.json");
+        string memory uiPath = vm.envOr(
+            "FRONTEND_DEPLOYMENT_JSON",
+            string.concat(projectRoot, "/oscillon-ui/src/deployment.json")
+        );
+
+        string memory chainKey = ".11155111";
+        vm.writeJson(json, rootPath, chainKey);
+        vm.writeJson(json, uiPath, chainKey);
+
+        console2.log("deployment.json ->", rootPath);
+        console2.log("deployment.json ->", uiPath);
     }
 }
