@@ -231,6 +231,46 @@ contract OscillonHookTwapTest is Test, Deployers {
         );
     }
 
+    // ── getPoolState reports the same warm-up transition ─────────────────────
+
+    function test_getPoolState_twapWarmedUp_falseThenTrue() public {
+        (, bool warmedUpCold) = _getPoolStateTwapWarmedUp();
+        assertFalse(warmedUpCold, "cold pool: TWAP not warmed up yet");
+
+        // Same 35-min build-up as test_observation_buildsHistoryOver30Min.
+        for (uint256 i = 0; i < 60; i++) {
+            vm.warp(block.timestamp + 35);
+            _doSmallSwap();
+        }
+
+        (, bool warmedUpAfter) = _getPoolStateTwapWarmedUp();
+        assertTrue(warmedUpAfter, "warmed-up pool: real windowed TWAP now");
+    }
+
+    function _getPoolStateTwapWarmedUp()
+        internal
+        view
+        returns (bool registered, bool twapWarmedUp)
+    {
+        (bool ok, bytes memory data) = address(hook).staticcall(
+            abi.encodeWithSignature(
+                "getPoolState((address,address,uint24,int24,address))",
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks)
+            )
+        );
+        require(ok, "getPoolState failed");
+
+        (registered, , , , , , , , , , twapWarmedUp) = abi.decode(
+            data,
+            (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256, bool)
+        );
+        assertTrue(registered);
+    }
+
     // ── Ring buffer wraps and cardinality caps at OBS_CARDINALITY ────────────
 
     function test_observation_ringBufferWrapsAtCardinality() public {
@@ -330,7 +370,8 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         uint24 feeApplied,
         uint256 swapSize,
         bool isDrain,
-        bool usingFallback
+        bool usingFallback,
+        bool twapWarmedUp
     );
 
     uint24 constant BASE_FEE = 300;
@@ -444,7 +485,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
 
     function test_swap_NoDepeg_AppliesBaseFee() public {
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, false);
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, false, false);
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -460,6 +501,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
             FEE_AT_6_BPS_DRAIN,
             AMOUNT_IN,
             true,
+            false,
             false
         );
         _swap(int256(-int256(AMOUNT_IN)));
@@ -472,7 +514,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // guard does not override. Restore direction → BASE_FEE.
         oracle1.updateAnswer(int256(1.001e18));
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 10, BASE_FEE, AMOUNT_IN, false, false);
+        emit DepegDetected(poolId, 10, BASE_FEE, AMOUNT_IN, false, false, false);
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -483,7 +525,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // and the guard check is strictly `>`, so Chainlink is used directly.
         oracle1.updateAnswer(int256(0.998e18));
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 20, FEE_AT_20_BPS, AMOUNT_IN, true, false);
+        emit DepegDetected(poolId, 20, FEE_AT_20_BPS, AMOUNT_IN, true, false, false);
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -495,7 +537,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // depegBps = 0, isDrain = false, fee = BASE_FEE.
         oracle1.updateAnswer(int256(0.99e18));
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, false);
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, false, false);
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -507,12 +549,16 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // which equals spot ($1) here, so depegBps = 0, fee = BASE_FEE.
         oracle1.updateAnswer(int256(0.95e18));
 
-        // Warp past MAX_ORACLE_AGE (1h) so the staleness check trips.
+        // Warp past MAX_ORACLE_AGE (1h) so the staleness check trips. This
+        // also pushes the single seed observation past TWAP_WINDOW (30 min),
+        // so readTwapOrSpot no longer takes its early-return spot path here —
+        // twapWarmedUp is true even though only one observation exists,
+        // because it's now old enough to span a full window on its own.
         vm.warp(block.timestamp + 2 hours);
         oracle1.setUpdatedAt(1); // belt-and-braces: force updatedAt firmly stale.
 
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true); // usingFallback = true
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true, true); // usingFallback = true, twapWarmedUp = true
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -577,13 +623,17 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
             ,
             ,
             ,
-
+            ,
+            bool twapWarmedUp
         ) = abi.decode(
             data,
-            (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256)
+            (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256, bool)
         );
 
         assertTrue(registered);
+        // Only two swaps have happened at this point in the test, far short
+        // of TWAP_WINDOW (30 min) — the ring buffer hasn't warmed up yet.
+        assertFalse(twapWarmedUp);
         bool stable0IsCurrency0 =
             Currency.unwrap(poolKey.currency0) == address(stable0);
         if (stable0IsCurrency0) {
@@ -640,7 +690,8 @@ contract OscillonHookAnswerBoundTest is Test, Deployers {
         uint24 feeApplied,
         uint256 swapSize,
         bool isDrain,
-        bool usingFallback
+        bool usingFallback,
+        bool twapWarmedUp
     );
 
     uint24 constant BASE_FEE = 300;
@@ -755,7 +806,7 @@ contract OscillonHookAnswerBoundTest is Test, Deployers {
         // breaker in ChainlinkOracleAdapter can catch this; staleness alone
         // would not, since the aggregator keeps "updating" at its clamp.
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true); // usingFallback = true
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true, false); // usingFallback = true, twapWarmedUp = false
         _swap(int256(-int256(AMOUNT_IN)));
     }
 

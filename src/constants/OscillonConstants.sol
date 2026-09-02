@@ -11,6 +11,11 @@ library OscillonConstants {
     // Depeg gates
     uint256 internal constant SMALL_DEPEG_BPS = 3;
     uint256 internal constant QUADRATIC_DEAD_BAND = 3;
+    // Below this, the per-swap drain cap doesn't apply at all — mild
+    // deviations (3-14 bps) are priced via the surcharge, not size-limited,
+    // so routine volume isn't blocked. At/above it, the cap is the hard
+    // per-transaction ceiling regardless of trader capital.
+    uint256 internal constant CAP_DEPEG_BPS = 15;
 
     // Timing — MAX_ORACLE_AGE aligned with fee-curve horizon (3–50 bps depegs are
     // intraday events; stale Chainlink must not price drain swaps for hours).
@@ -20,7 +25,7 @@ library OscillonConstants {
     uint256 internal constant SEQUENCER_GRACE_PERIOD = 3600;
 
     // Swap caps / rolling window
-    uint256 internal constant MAX_DEPEG_SWAP_FACTOR = 50_000;
+    uint256 internal constant MAX_DEPEG_SWAP_FACTOR = 500_000;
     uint32 internal constant ROLLING_BLOCKS = 300;
 
     // TWAP
