@@ -52,6 +52,25 @@ contract DeployOscillon is Script {
     address constant USDC_ARBITRUM = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address constant USDT_ARBITRUM = 0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9;
 
+    // Ethereum Sepolia (chainId 11155111). PoolManager address confirmed both from
+    // the vendored lib/v4-periphery/broadcast/01_PoolManager.s.sol/11155111 artifact
+    // AND live on-chain (owner()/protocolFeesAccrued() behave as expected, not a
+    // revert) — verified 2026-09-02, do not trust without re-checking if this drifts.
+    address constant PM_SEPOLIA = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
+    // USDe/USD — verified live via description()=="USDE / USD" and a fresh
+    // updatedAt timestamp, 2026-09-02.
+    address constant CL_USDE_USD_SEPOLIA = 0x55ec7c3ed0d7CB5DF4d3d8bfEd2ecaf28b4638fb;
+    // USDC/USD — verified live via description()=="USDC / USD" and a fresh
+    // updatedAt timestamp, 2026-09-02.
+    address constant CL_USDC_USD_SEPOLIA = 0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E;
+    // NOTE: no USDT/USD Sepolia feed address here — every candidate found while
+    // researching this either had no bytecode on Sepolia (mainnet-only) or
+    // couldn't be confirmed. The Sepolia branch below deploys a USDe/USDC pool,
+    // not USDe/USDT. If you need a real USDT/USD Sepolia feed, verify one
+    // yourself at data.chain.link (filter: Ethereum Sepolia) and confirm on-chain
+    // via `cast call <addr> "description()(string)" --rpc-url <sepolia-rpc>`
+    // before trusting it — do not paste an unverified address in here.
+
     uint160 constant SQRT_PRICE_1_1 = 79228162514264337593543950336;
 
     struct OracleBundle {
@@ -70,6 +89,8 @@ contract DeployOscillon is Script {
         address hook;
         address usdc;
         address usdt;
+        uint8 usdcDecimals;
+        uint8 usdtDecimals;
         OracleBundle oracles;
         address oracle0;
         address oracle1;
@@ -106,10 +127,10 @@ contract DeployOscillon is Script {
         IPoolManager poolManager = IPoolManager(pmAddr);
         out.poolManager = pmAddr;
 
-        (out.usdc, out.usdt) = _tokens(chainId, deployer);
+        (out.usdc, out.usdt, out.usdcDecimals, out.usdtDecimals) = _tokens(chainId, deployer);
         out.oracles = _oracles(chainId);
 
-        if (chainId == 31337 || chainId == 421614) {
+        if (chainId == 31337 || chainId == 421614 || chainId == 11155111) {
             out.swapRouter = address(new PoolSwapTest(poolManager));
             out.liquidityRouter = address(new PoolModifyLiquidityTest(poolManager));
             // Only on Anvil — deployer owns the freshly deployed PoolManager.
@@ -124,11 +145,13 @@ contract DeployOscillon is Script {
         hook.approveAdapter(out.oracles.usdcAdapter);
         hook.approveAdapter(out.oracles.usdtAdapter);
 
-        (out.poolKey, out.oracle0, out.oracle1) = _buildPoolKey(out);
+        uint8 dec0;
+        uint8 dec1;
+        (out.poolKey, out.oracle0, out.oracle1, dec0, dec1) = _buildPoolKey(out);
         poolManager.initialize(out.poolKey, SQRT_PRICE_1_1);
         out.poolId = PoolId.unwrap(out.poolKey.toId());
 
-        if (chainId == 31337 || chainId == 421614) {
+        if (chainId == 31337 || chainId == 421614 || chainId == 11155111) {
             PoolModifyLiquidityTest(out.liquidityRouter).modifyLiquidity(
                 out.poolKey,
                 ModifyLiquidityParams({
@@ -145,8 +168,8 @@ contract DeployOscillon is Script {
             out.poolKey,
             out.oracle0,
             out.oracle1,
-            uint8(6),
-            uint8(6)
+            dec0,
+            dec1
         );
     }
 
@@ -154,18 +177,34 @@ contract DeployOscillon is Script {
         if (chainId == 31337) return address(new PoolManager(deployer));
         if (chainId == 421614) return PM_ARBITRUM_SEPOLIA;
         if (chainId == 42161) return PM_ARBITRUM;
+        if (chainId == 11155111) return PM_SEPOLIA;
         revert("DeployOscillon: unsupported chainId");
     }
 
-    function _tokens(uint256 chainId, address deployer) internal returns (address usdc, address usdt) {
+    function _tokens(
+        uint256 chainId,
+        address deployer
+    ) internal returns (address usdc, address usdt, uint8 usdcDecimals, uint8 usdtDecimals) {
         if (chainId == 31337 || chainId == 421614) {
             MockERC20 mockUsdc = new MockERC20("USD Coin", "USDC", 6);
             MockERC20 mockUsdt = new MockERC20("Tether USD", "USDT", 6);
             mockUsdc.mint(deployer, 1_000_000 * 1e6);
             mockUsdt.mint(deployer, 1_000_000 * 1e6);
-            return (address(mockUsdc), address(mockUsdt));
+            return (address(mockUsdc), address(mockUsdt), 6, 6);
         }
-        if (chainId == 42161) return (USDC_ARBITRUM, USDT_ARBITRUM);
+        if (chainId == 42161) return (USDC_ARBITRUM, USDT_ARBITRUM, 6, 6);
+        if (chainId == 11155111) {
+            // No verified real USDe/USDC token contracts on Sepolia — mint
+            // mocks priced by the real Chainlink feeds below, same pattern
+            // already used for 31337/421614. Decimals match the real assets
+            // (USDe: 18, USDC: 6) so maxDepegSwap scaling in registerPool is
+            // correct — this is NOT the same 6/6 as the other branches.
+            MockERC20 mockUsde = new MockERC20("Ethena USDe", "USDe", 18);
+            MockERC20 mockUsdc2 = new MockERC20("USD Coin", "USDC", 6);
+            mockUsde.mint(deployer, 1_000_000 * 1e18);
+            mockUsdc2.mint(deployer, 1_000_000 * 1e6);
+            return (address(mockUsde), address(mockUsdc2), 18, 6);
+        }
         revert("DeployOscillon: unsupported chainId");
     }
 
@@ -205,6 +244,20 @@ contract DeployOscillon is Script {
             );
             return o;
         }
+        if (chainId == 11155111) {
+            // "usdcFeed"/"usdcAdapter" here actually price USDe (see _tokens);
+            // "usdtFeed"/"usdtAdapter" price USDC. Reusing the generic field
+            // names to keep this diff small rather than renaming the struct.
+            o.usdcFeed = CL_USDE_USD_SEPOLIA;
+            o.usdtFeed = CL_USDC_USD_SEPOLIA;
+            o.usdcAdapter = address(
+                new ChainlinkOracleAdapter(o.usdcFeed, address(0), C.MAX_ORACLE_AGE)
+            );
+            o.usdtAdapter = address(
+                new ChainlinkOracleAdapter(o.usdtFeed, address(0), C.MAX_ORACLE_AGE)
+            );
+            return o;
+        }
         revert("DeployOscillon: unsupported chainId");
     }
 
@@ -227,7 +280,7 @@ contract DeployOscillon is Script {
     function _buildPoolKey(DeployOutput memory out)
         internal
         pure
-        returns (PoolKey memory key, address oracle0, address oracle1)
+        returns (PoolKey memory key, address oracle0, address oracle1, uint8 decimals0, uint8 decimals1)
     {
         if (out.usdc < out.usdt) {
             key = PoolKey({
@@ -239,6 +292,8 @@ contract DeployOscillon is Script {
             });
             oracle0 = out.oracles.usdcAdapter;
             oracle1 = out.oracles.usdtAdapter;
+            decimals0 = out.usdcDecimals;
+            decimals1 = out.usdtDecimals;
         } else {
             key = PoolKey({
                 currency0: Currency.wrap(out.usdt),
@@ -249,6 +304,8 @@ contract DeployOscillon is Script {
             });
             oracle0 = out.oracles.usdtAdapter;
             oracle1 = out.oracles.usdcAdapter;
+            decimals0 = out.usdtDecimals;
+            decimals1 = out.usdcDecimals;
         }
     }
 
