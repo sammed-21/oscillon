@@ -184,7 +184,9 @@ contract OscillonHook is BaseHook {
                 (10 ** uint256(stableDecimals1)),
             lastHighDepegAt: 0,
             surplusAccrued: 0,
-            protocolAccrued: 0
+            protocolAccrued: 0,
+            decimals0: stableDecimals0,
+            decimals1: stableDecimals1
         });
 
         emit PoolRegistered(
@@ -319,7 +321,9 @@ contract OscillonHook is BaseHook {
         (uint256 twapPrice, bool twapWarmedUp) = OscillonTwapOracle.readTwapOrSpot(
             poolManager,
             key,
-            twapStates[key.toId()]
+            twapStates[key.toId()],
+            cfg.decimals0,
+            cfg.decimals1
         );
         PriceResult memory price = OscillonPriceEngine.getSellTokenPrice(
             tokenOracles,
@@ -460,7 +464,9 @@ contract OscillonHook is BaseHook {
         (uint256 twapPrice, bool twapWarmedUp) = OscillonTwapOracle.readTwapOrSpot(
             poolManager,
             key,
-            twapStates[poolId]
+            twapStates[poolId],
+            cfg.decimals0,
+            cfg.decimals1
         );
 
         PriceResult memory price0 =

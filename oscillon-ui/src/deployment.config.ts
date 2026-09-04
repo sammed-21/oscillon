@@ -38,6 +38,95 @@ export const deployments = deploymentJson as DeploymentRegistry;
 
 export const DEFAULT_CHAIN_ID = 31337;
 
+/**
+ * Sepolia (11155111) is a multi-pool deployment: 3 pools (USDC/USDT,
+ * USDe/USDC, USDe/USDT) sharing 3 tokens/adapters, written by
+ * DeployOscillon.s.sol's `_writeMultiPoolDeploymentJson`. Distinct shape
+ * from the single-pool `Deployment` above — do not conflate the two.
+ */
+export interface MultiPoolDeployment {
+  chainId: number;
+  chainName: string;
+  deployedAt: string;
+  deployer: `0x${string}`;
+  poolManager: `0x${string}`;
+  swapRouter: `0x${string}`;
+  liquidityRouter: `0x${string}`;
+  oscillonHook: `0x${string}`;
+  usde: `0x${string}`;
+  usdc: `0x${string}`;
+  usdt: `0x${string}`;
+  usdeAdapter: `0x${string}`;
+  usdcAdapter: `0x${string}`;
+  usdtAdapter: `0x${string}`;
+  usdeFeed: `0x${string}`;
+  usdcFeed: `0x${string}`;
+  usdtFeed: `0x${string}`;
+  usdcUsdt_currency0: `0x${string}`;
+  usdcUsdt_currency1: `0x${string}`;
+  usdcUsdt_poolId: `0x${string}`;
+  usdeUsdc_currency0: `0x${string}`;
+  usdeUsdc_currency1: `0x${string}`;
+  usdeUsdc_poolId: `0x${string}`;
+  usdeUsdt_currency0: `0x${string}`;
+  usdeUsdt_currency1: `0x${string}`;
+  usdeUsdt_poolId: `0x${string}`;
+}
+
+export const SEPOLIA_CHAIN_ID = 11155111;
+const POOL_FEE = 8388608; // LPFeeLibrary.DYNAMIC_FEE_FLAG
+const POOL_TICK_SPACING = 1;
+
+export function getMultiPoolDeployment(
+  chainId: number = SEPOLIA_CHAIN_ID,
+): MultiPoolDeployment {
+  const d = (deploymentJson as Record<string, unknown>)[String(chainId)];
+  if (!d) {
+    throw new Error(`No multi-pool deployment found for chain ${chainId}`);
+  }
+  return d as MultiPoolDeployment;
+}
+
+export type SepoliaPoolName = "usdcUsdt" | "usdeUsdc" | "usdeUsdt";
+
+/** Returns the 3 Sepolia pools as ready-to-use PoolKey + poolId pairs. */
+export function getSepoliaPools(): Record<
+  SepoliaPoolName,
+  {
+    poolKey: {
+      currency0: `0x${string}`;
+      currency1: `0x${string}`;
+      fee: number;
+      tickSpacing: number;
+      hooks: `0x${string}`;
+    };
+    poolId: `0x${string}`;
+  }
+> {
+  const d = getMultiPoolDeployment(SEPOLIA_CHAIN_ID);
+  const make = (currency0: `0x${string}`, currency1: `0x${string}`) => ({
+    currency0,
+    currency1,
+    fee: POOL_FEE,
+    tickSpacing: POOL_TICK_SPACING,
+    hooks: d.oscillonHook,
+  });
+  return {
+    usdcUsdt: {
+      poolKey: make(d.usdcUsdt_currency0, d.usdcUsdt_currency1),
+      poolId: d.usdcUsdt_poolId,
+    },
+    usdeUsdc: {
+      poolKey: make(d.usdeUsdc_currency0, d.usdeUsdc_currency1),
+      poolId: d.usdeUsdc_poolId,
+    },
+    usdeUsdt: {
+      poolKey: make(d.usdeUsdt_currency0, d.usdeUsdt_currency1),
+      poolId: d.usdeUsdt_poolId,
+    },
+  };
+}
+
 const EMPTY_DEPLOYMENT: Deployment = {
   chainId: 0,
   chainName: "",
@@ -124,6 +213,7 @@ export const HOOK_ABI = [
       { name: "inRestoreWindow", type: "bool" },
       { name: "surplusAccrued", type: "uint256" },
       { name: "protocolAccrued", type: "uint256" },
+      { name: "twapWarmedUp", type: "bool" },
     ],
   },
   {
@@ -170,6 +260,8 @@ export const HOOK_ABI = [
       { name: "swapSize", type: "uint256", indexed: false },
       { name: "isDrain", type: "bool", indexed: false },
       { name: "usingFallback", type: "bool", indexed: false },
+      { name: "twapWarmedUp", type: "bool", indexed: false },
+      { name: "tokenInIsToken0", type: "bool", indexed: false },
     ],
   },
   {
@@ -232,12 +324,24 @@ export const ARBITRUM_SEPOLIA_CHAIN = {
   },
 } as const;
 
+export const ETHEREUM_SEPOLIA_CHAIN = {
+  id: 11155111,
+  name: "Ethereum Sepolia",
+  nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://ethereum-sepolia-rpc.publicnode.com"] } },
+  blockExplorers: {
+    default: { name: "Etherscan", url: "https://sepolia.etherscan.io" },
+  },
+} as const;
+
 export function getChainConfig(chainId: number = DEFAULT_CHAIN_ID) {
   switch (chainId) {
     case 31337:
       return ANVIL_CHAIN;
     case 421614:
       return ARBITRUM_SEPOLIA_CHAIN;
+    case 11155111:
+      return ETHEREUM_SEPOLIA_CHAIN;
     default:
       return ANVIL_CHAIN;
   }

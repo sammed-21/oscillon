@@ -20,6 +20,8 @@ struct PoolConfig {
     uint256 lastHighDepegAt;
     uint256 surplusAccrued;
     uint256 protocolAccrued;
+    uint8 decimals0;
+    uint8 decimals1;
 }
 
 struct Observation {

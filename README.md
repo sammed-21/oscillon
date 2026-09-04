@@ -4,7 +4,7 @@
 
 Oscillon is a dynamic-fee hook that monitors oracle prices on the token being sold, detects depeg conditions, and applies a **base fee plus depeg surcharge** so liquidity providers are compensated when traders drain below-peg stablecoins.
 
-Designed for stable/stable pools such as USDC/USDT, USDC/DAI, and USDT/DAI.
+Designed for stable/stable pools such as USDC/USDT, USDe/USDC, and USDe/USDT.
 
 ---
 
@@ -23,10 +23,11 @@ Swap (user sells tokenIn)
 ┌───────────────────────────────────────┐
 │  OscillonHook.beforeSwap              │
 │  1. Identify input token (token0/1)   │
-│  2. Read Chainlink + pool TWAP        │
+│  2. Read Chainlink/RedStone + TWAP    │
 │  3. Compute depegBps + isDrain        │
 │  4. Select fee = base + surcharge     │
-│  5. Emit DepegDetected                │
+│  5. Enforce swap-size cap (>=15 bps)  │
+│  6. Emit DepegDetected                │
 └───────────────────────────────────────┘
         │
         ▼
@@ -35,13 +36,14 @@ Swap (user sells tokenIn)
 
 | Component | Role |
 |-----------|------|
-| `ChainlinkOracleAdapter` | Primary USD price per token |
-| `OscillonTwapOracle` | 30-minute pool TWAP fallback |
+| `ChainlinkOracleAdapter` | Primary USD price per token — works with any `AggregatorV3Interface`-shaped feed (Chainlink or RedStone's Chainlink-compatible feeds; no separate RedStone adapter needed) |
+| `OscillonTwapOracle` | 30-minute pool TWAP fallback, decimals-aware |
 | `OscillonPriceEngine` | Blends sources; disagreement guard at 20 bps |
 | `OscillonFeePolicy` | Hybrid piecewise + quadratic surcharge curve |
 | `OscillonHook` | Orchestrates policy and returns dynamic fee |
+| `PythAdapter` | Skeleton only — implements `IOscillonOracle` for a Pyth pull-based feed, **not wired into any deployed pool** (see [Known Limitations](#known-limitations)) |
 
-**Drain swap** = user sells the token that is below $1 (`pegBelow = true`).  
+**Drain swap** = user sells the token that is below $1 (`pegBelow = true`).
 **Restore swap** = user sells the above-peg token → base fee only.
 
 ---
@@ -57,7 +59,7 @@ total fee = BASE_FEE (3 bps) + depeg surcharge (hybrid curve)
 | Scenario | Fee (approx.) |
 |----------|----------------|
 | At peg, any direction | **3 bps** base |
-| 6 bps drain (sell below-peg USDT) | **4 bps** (3 + 1) |
+| 6 bps drain (sell below-peg token) | **4 bps** (3 + 1) |
 | 20 bps drain | **9 bps** (3 + 6) |
 | Restore direction (sell above-peg) | **3 bps** base |
 | Max cap | **50 bps** |
@@ -65,10 +67,12 @@ total fee = BASE_FEE (3 bps) + depeg surcharge (hybrid curve)
 Constants (`OscillonConstants.sol`):
 
 - `BASE_FEE_PIPS = 300` (3 bps)
-- `SMALL_DEPEG_BPS = 3` — dynamic path starts here
+- `SMALL_DEPEG_BPS = 3` — dynamic fee curve starts here
 - `MAX_FEE_PIPS = 5000` (50 bps)
-- `MAX_ORACLE_AGE = 1 hour` (aligned with intraday depeg / fee-curve horizon)
-- `ORACLE_DISAGREE_BPS = 20` — Chainlink vs TWAP blend threshold
+- `MAX_ORACLE_AGE = 1 hour` (aligned with intraday depeg / fee-curve horizon; Chainlink-tuned — RedStone adapters override this per-deployment, see [Oracle Providers](#oracle-providers))
+- `ORACLE_DISAGREE_BPS = 20` — cross-source (primary vs TWAP) blend threshold
+- `CAP_DEPEG_BPS = 15` — swap-size cap only activates at/above this depeg; below it, drain swaps are fully priced via the surcharge with no size limit, so routine volume isn't blocked
+- `MAX_DEPEG_SWAP_FACTOR = 500_000` — absolute per-token cap ceiling (paired with a 0.5%-of-liquidity cap, whichever binds)
 
 On each swap the hook emits:
 
@@ -80,11 +84,15 @@ event DepegDetected(
     uint256 swapSize,
     bool isDrain,
     bool usingFallback,
-    bool twapWarmedUp
+    bool twapWarmedUp,
+    bool tokenInIsToken0
 );
 ```
 
-`twapWarmedUp` is reporting-only — it does not change `feeApplied`. It's `false` whenever the TWAP ring buffer hasn't spanned the full 30-minute `TWAP_WINDOW` yet (freshly registered pools, or any read before enough history has accumulated), meaning any TWAP-sourced price in this swap was raw spot, not a real windowed average. See [Known Limitations](#known-limitations) and `THREAT_MODEL.md` §1.2.
+`twapWarmedUp` and `tokenInIsToken0` are reporting-only — neither changes `feeApplied`.
+
+- `twapWarmedUp` is `false` whenever the TWAP price used in this swap is raw spot rather than a real windowed average — either the ring buffer hasn't spanned the full 30-minute `TWAP_WINDOW` yet, or (as of the current fix) it has fewer than 2 real observations, since a single synthetic seed observation extrapolated across elapsed time produces nonsense, not a real average. See [Known Limitations](#known-limitations) and `THREAT_MODEL.md` §1.2.
+- `tokenInIsToken0` says which side `depegBps` refers to — needed for indexers/subgraphs to attribute a reading to a specific token without a separate join against the raw `PoolManager.Swap` event.
 
 ---
 
@@ -128,20 +136,50 @@ Side-by-side fee models including hybrid, piecewise, quadratic (K=45), and addit
 
 ```
 src/
-├── OscillonHook.sol              # beforeSwap fee override + pool registry
+├── OscillonHook.sol                    # beforeSwap fee override + pool registry
 ├── oracle/
-│   ├── OscillonPriceEngine.sol   # Chainlink + TWAP cascade
+│   ├── IOscillonOracle.sol             # common adapter interface (price sources)
+│   ├── IChainlinkAggregator.sol        # minAnswer/maxAnswer + proxy-resolution interfaces
+│   ├── IChainlinkSequencer.sol
+│   ├── OscillonPriceEngine.sol         # primary-source + TWAP cascade, disagreement guard
 │   └── adapters/
-│       └── ChainlinkOracleAdapter.sol
+│       ├── ChainlinkOracleAdapter.sol  # wraps any AggregatorV3Interface feed
+│       └── PythAdapter.sol             # skeleton only, not wired in — see below
 ├── libraries/
-│   ├── OscillonFeePolicy.sol     # Hybrid surcharge curve
-│   ├── OscillonDepegMath.sol     # Depeg bps + disagreement guard
-│   └── OscillonTwapOracle.sol    # In-pool TWAP ring buffer
+│   ├── OscillonFeePolicy.sol           # hybrid surcharge curve
+│   ├── OscillonDepegMath.sol           # depeg bps + disagreement guard math
+│   └── OscillonTwapOracle.sol          # in-pool TWAP ring buffer, decimals-aware
+├── types/
+│   └── OscillonTypes.sol
+├── errors/
+│   └── OscillonErrors.sol
 └── constants/
     └── OscillonConstants.sol
+
+script/
+└── DeployOscillon.s.sol   # single-pool path (Anvil/Arbitrum) + multi-pool path (Sepolia)
+
+test/
+├── OscillonHook.t.sol           # depeg/fee, TWAP ring buffer, answer-bound, decimal-mismatch
+├── OscillonFeePolicy.t.sol
+├── ChainlinkOracleAdapter.t.sol # minAnswer/maxAnswer circuit breaker, isolated from the hook
+└── OscillonInvariants.t.sol     # pure fuzz + stateful invariant campaign (see THREAT_MODEL.md §6)
 ```
 
-**Multi-pool support:** owner calls `registerPool()` per stable pair with Chainlink adapters for each token. No pool freeze — severe depeg caps fee at 50 bps; swaps continue.
+**Multi-pool support:** owner calls `registerPool()` per stable pair with an approved oracle adapter for each token. No pool freeze — severe depeg caps fee at 50 bps; swaps continue.
+
+---
+
+## Oracle Providers
+
+`ChainlinkOracleAdapter` only depends on the standard `AggregatorV3Interface` shape (`decimals()`, `latestRoundData()`) — it doesn't care what's behind that interface, so it works unmodified with any source that implements it, not just Chainlink itself. Currently deployed against two:
+
+- **Chainlink** — used where a native feed exists (e.g. USDe/USD on Sepolia). `maxAge` defaults to `MAX_ORACLE_AGE` (1h), tuned to Chainlink's typical heartbeat.
+- **RedStone (Classic/push feeds)** — used where no native Chainlink feed exists (e.g. USDC/USD and USDT/USD on Sepolia). RedStone's push-style feeds are deliberately ABI-identical to Chainlink's for exactly this drop-in compatibility. RedStone's heartbeat here is ~6h, not Chainlink's ~1h, so RedStone-backed adapters are constructed with a longer explicit `maxAge` override — reusing the Chainlink-tuned default would treat a perfectly on-schedule RedStone update as stale 5 of every 6 hours.
+
+**Gap worth knowing:** the minAnswer/maxAnswer floor/ceiling circuit breaker (see [Security](#security)) only works when the underlying feed exposes those functions. RedStone's feeds don't — `_tryFetchBounds` gracefully degrades (`boundsKnown = false`, check skipped) rather than reverting, but it means that specific defense only protects Chainlink-sourced legs of a pool, not RedStone-sourced ones.
+
+**Pyth:** `PythAdapter.sol` exists as a skeleton implementing `IOscillonOracle` against a locally-defined minimal `IPyth` interface (no external SDK dependency). It is **not approved or registered on any deployed pool** — Pyth's pull model (someone must push a fresh price via `updatePriceFeeds()` before each read, with no automatic keeper) is a real operational dependency this project hasn't taken on. Wiring it in for real is a config change (`approveAdapter` + `registerPool`/`updatePoolChainlinkOracle`), not a code change.
 
 ---
 
@@ -151,7 +189,8 @@ src/
 
 ```bash
 forge build
-forge test --match-contract OscillonHook -vv
+forge test                                    # 32 tests, all suites
+forge test --match-contract OscillonHookInvariants -vv   # slow stateful invariant campaign (~15 min)
 ```
 
 ### Deploy (Anvil local)
@@ -167,9 +206,9 @@ forge script script/DeployOscillon.s.sol:DeployOscillon \
   --broadcast
 ```
 
-Deployment addresses are written to `oscillon-ui/src/deployment.json`.
+Deployment addresses are written to `deployment.json` and `oscillon-ui/src/deployment.json`.
 
-### Deploy (Arbitrum Sepolia)
+### Deploy (Arbitrum Sepolia / Arbitrum) — single pool
 
 ```bash
 forge script script/DeployOscillon.s.sol:DeployOscillon \
@@ -177,46 +216,79 @@ forge script script/DeployOscillon.s.sol:DeployOscillon \
   --broadcast
 ```
 
+### Deploy (Ethereum Sepolia) — 3-pool multi-pool path
+
+`chainId == 11155111` routes through a dedicated multi-pool deploy (`_deployMultiPoolSepolia`), separate from the single-pool path above, that mints 3 mock tokens (USDe 18dec, USDC 6dec, USDT 6dec) and registers **USDC/USDT, USDe/USDC, and USDe/USDT** against real, on-chain-verified feeds:
+
+```bash
+source .env
+forge script script/DeployOscillon.s.sol:DeployOscillon \
+  --rpc-url "$RPC_URL" \
+  --broadcast \
+  --verify \
+  --etherscan-api-key "$ETHERSCAN_API_KEY"
+```
+
+Writes a flat record under the `"11155111"` key in `deployment.json` — token/adapter/feed addresses plus each pool's `currency0`/`currency1`/`poolId` (`usdcUsdt_*`, `usdeUsdc_*`, `usdeUsdt_*` prefixes). No verified real USDT/USD Chainlink feed exists on Sepolia (checked extensively) — USDC and USDT are priced via RedStone instead; only USDe uses a native Chainlink feed.
+
+Pool initial price and liquidity are decimals-aware, not flat constants — see [Known Limitations](#known-limitations) for why that matters and what was fixed.
+
+**Deploy key hygiene:** use a plain EOA reserved for CLI deploys only. A key that's also imported into a browser wallet (e.g. for testing the swap UI) can get silently upgraded to an EIP-7702 delegated smart account by the wallet app, which causes `forge script --broadcast` to intermittently fail with nonce/mempool errors that have nothing to do with the contracts. Keep deploy keys and interactive-testing keys separate.
+
 ---
 
 ## Frontend Integration
 
 The UI should show **three linked values** per swap:
 
-1. **Hook price** — effective USD price for the input token (Chainlink + TWAP logic)
+1. **Hook price** — effective USD price for the input token (primary oracle + TWAP logic)
 2. **Depeg deviation** — bps from $1 for that token
 3. **Total fee** — base (3 bps) + surcharge, from `DepegDetected` or swap simulation
 
-Use `getDeployment(chainId)` from `oscillon-ui/src/deployment.config.ts`.  
-Fee quotes must be **per swap direction** — use `depegBps0` / `depegBps1` from `getPoolState()` for the correct token.
+Use `getDeployment(chainId)` (single-pool chains) or `getMultiPoolDeployment(chainId)` / `getSepoliaPools()` (Ethereum Sepolia) from `oscillon-ui/src/deployment.config.ts`.
+Fee quotes must be **per swap direction** — use `depegBps0` / `depegBps1` from `getPoolState()` for the correct token. `getPoolState()` also returns `twapWarmedUp` (11th field) — surface it so a raw-spot-priced fallback reading isn't presented as a real windowed average.
 
 ---
 
 ## Security
 
 - Hook callbacks restricted to `PoolManager` via `BaseHook`
-- Chainlink staleness: `block.timestamp > updatedAt + 1h` → TWAP fallback
+- Oracle staleness: `block.timestamp > updatedAt + maxAge` → TWAP fallback (`maxAge` is per-adapter, see [Oracle Providers](#oracle-providers))
+- **minAnswer/maxAnswer circuit breaker**: if a feed's underlying aggregator is clamped at its configured floor/ceiling (the LUNA/UST failure mode — an aggregator can keep reporting a saturated value instead of reverting), the adapter reverts rather than trusting it, routing through the same TWAP-fallback path staleness uses. Only works where the feed exposes `minAnswer()`/`maxAnswer()` — see the RedStone gap noted in [Oracle Providers](#oracle-providers)
 - Oracle disagreement > 20 bps → conservative price (closer to $1)
 - Exact-output swaps disabled when `depegBps >= 3`
+- Swap-size cap (`min(MAX_DEPEG_SWAP_FACTOR, 0.5% of pool liquidity)`) only activates at `depegBps >= CAP_DEPEG_BPS (15)` — mild deviations are priced via the surcharge, not size-limited, so routine volume isn't throttled by a control meant for severe events
 - Rolling drain multiplier increases fee under sustained drain pressure
 
 Liquidity add/remove is unrestricted (no hook on LP operations).
+
+See `THREAT_MODEL.md` for the full adversary model, sourced defense parameters, and explicit scope boundaries.
 
 ---
 
 ## Known Limitations
 
-**Surplus accounting (indicative only)**  
+**Surplus accounting (indicative only)**
 `surplusAccrued` and `protocolAccrued` track theoretical surplus from dynamic fees but are not connected to actual v4 fee settlement. `collectProtocolFees` requires proper fee skimming via `donate()` or `afterSwapReturnDelta` for production.
 
-**Oracle latency**  
-TWAP window is 30 minutes. During fast depegs, TWAP can lag spot. Chainlink freshness uses a 1-hour `maxAge` (then TWAP fallback).
+**Oracle latency**
+TWAP window is 30 minutes. During fast depegs, TWAP can lag spot. Primary-source freshness uses a `maxAge` tuned per provider (1h Chainlink, 7h RedStone on the current Sepolia deployment) before falling back to TWAP.
 
-**K parameter**  
+**Decimals-mismatched pools need decimals-aware pricing and seeding — now fixed, but was not always true.** v4 prices in raw smallest-unit ratios, not dollar-normalized amounts. For a pool pairing tokens with different decimals (e.g. USDe 18 vs USDC 6), a naive `SQRT_PRICE_1_1` init or flat `liquidityDelta` constant is wrong by orders of magnitude (10^12 in this case) — this was found and fixed across three related spots:
+- `OscillonTwapOracle.priceFromSqrtX96` now takes `decimals0`/`decimals1` and scales the raw ratio into a real dollar-comparable price (`PoolConfig` stores per-pool decimals at registration for this).
+- `DeployOscillon.s.sol`'s `_initialSqrtPriceX96` computes the correct decimals-adjusted starting price instead of assuming 1:1 raw parity.
+- Liquidity seeding uses `LiquidityAmounts.getLiquidityForAmounts` targeting a real token depth (`SEED_DEPTH` per side) instead of a flat `liquidityDelta` constant that produced near-zero real depth at a skewed price level.
+
+Also fixed alongside the decimals work: `OscillonTwapOracle.readTwapOrSpot` previously judged "TWAP warmed up" by elapsed time alone. With only the synthetic seed observation (tick-cumulative always `0`) and enough wall-clock time passed, it extrapolated a nonsense average tick — invisible for equal-decimal pools initialized near tick 0, but produces an out-of-range `TickMath.InvalidTick` revert for any pool whose real tick sits far from 0. Fixed by also requiring at least 2 real observations before attempting a windowed average.
+
+**K parameter**
 `K_STANDARD = 45` used universally; thin-pool tier not yet wired to live liquidity reads.
 
-**POC scope**  
-Static thresholds; single oracle per token; economic calibration from backtests, not live mainnet stress.
+**Pyth not wired in**
+`PythAdapter.sol` is a compiling, tested-in-isolation skeleton — not approved or registered against any deployed pool. See [Oracle Providers](#oracle-providers).
+
+**POC scope**
+Static thresholds; one primary oracle source per token (plus TWAP fallback); economic calibration from backtests, not live mainnet stress.
 
 ---
 

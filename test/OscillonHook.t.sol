@@ -551,16 +551,17 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         // which equals spot ($1) here, so depegBps = 0, fee = BASE_FEE.
         oracle1.updateAnswer(int256(0.95e18));
 
-        // Warp past MAX_ORACLE_AGE (1h) so the staleness check trips. This
-        // also pushes the single seed observation past TWAP_WINDOW (30 min),
-        // so readTwapOrSpot no longer takes its early-return spot path here —
-        // twapWarmedUp is true even though only one observation exists,
-        // because it's now old enough to span a full window on its own.
+        // Warp past MAX_ORACLE_AGE (1h) so the staleness check trips. Only
+        // the synthetic seed observation exists at this point (no swap has
+        // happened yet) — readTwapOrSpot correctly refuses to treat that as
+        // "warmed up" regardless of elapsed time, since there's no real
+        // trading history to average over yet (see OscillonTwapOracle: card
+        // < 2 guard). It falls back to spot, which equals $1 here.
         vm.warp(block.timestamp + 2 hours);
         oracle1.setUpdatedAt(1); // belt-and-braces: force updatedAt firmly stale.
 
         vm.expectEmit(true, false, false, true, address(hook));
-        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true, true, sellStable1ZeroForOne); // usingFallback = true, twapWarmedUp = true
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true, false, sellStable1ZeroForOne); // usingFallback = true, twapWarmedUp = false
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -831,5 +832,185 @@ contract OscillonHookAnswerBoundTest is Test, Deployers {
             }),
             ""
         );
+    }
+}
+
+/// @notice Regression test for the decimals-blind TWAP pricing bug: a pool
+/// pairing an 18-decimal token (e.g. USDe) against a 6-decimal token (e.g.
+/// USDC) was reporting a false ~100% depeg whenever TWAP fallback kicked in,
+/// because OscillonTwapOracle.priceFromSqrtX96 converted the raw
+/// currency1-per-currency0 unit ratio straight to a "dollar price" with no
+/// decimals adjustment — correct only when both tokens share decimals (which
+/// every pool before this one happened to). None of the other test fixtures
+/// in this file catch this because they all use 18/18 mock pairs.
+contract OscillonHookDecimalMismatchTest is Test, Deployers {
+    using PoolIdLibrary for PoolKey;
+
+    event DepegDetected(
+        bytes32 indexed poolId,
+        uint256 depegBps,
+        uint24 feeApplied,
+        uint256 swapSize,
+        bool isDrain,
+        bool usingFallback,
+        bool twapWarmedUp,
+        bool tokenInIsToken0
+    );
+
+    uint24 constant BASE_FEE = 300;
+    uint256 constant AMOUNT_IN = 1e15;
+
+    MockERC20 stable18; // 18 decimals, e.g. USDe
+    MockERC20 stable6; // 6 decimals, e.g. USDC
+    MockV3Aggregator oracle18;
+    MockV3Aggregator oracle6;
+    ChainlinkOracleAdapter adapter18;
+    ChainlinkOracleAdapter adapter6;
+    OscillonHook hook;
+    PoolKey poolKey;
+    bytes32 poolId;
+    bool sellStable6ZeroForOne;
+
+    function setUp() public {
+        deployFreshManagerAndRouters();
+
+        stable18 = new MockERC20("Ethena USDe", "USDe", 18);
+        stable6 = new MockERC20("USD Coin", "USDC", 6);
+        stable18.mint(address(this), type(uint128).max);
+        stable6.mint(address(this), type(uint128).max);
+        stable18.approve(address(swapRouter), type(uint128).max);
+        stable6.approve(address(swapRouter), type(uint128).max);
+        stable18.approve(address(modifyLiquidityRouter), type(uint128).max);
+        stable6.approve(address(modifyLiquidityRouter), type(uint128).max);
+
+        oracle18 = new MockV3Aggregator(18, int256(1e18));
+        oracle6 = new MockV3Aggregator(18, int256(1e18));
+
+        adapter18 = new ChainlinkOracleAdapter(
+            address(oracle18),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
+        adapter6 = new ChainlinkOracleAdapter(
+            address(oracle6),
+            address(0),
+            C.MAX_ORACLE_AGE
+        );
+
+        uint160 flags = uint160(
+            Hooks.BEFORE_SWAP_FLAG |
+                Hooks.AFTER_INITIALIZE_FLAG |
+                Hooks.AFTER_SWAP_FLAG
+        );
+        deployCodeTo(
+            "OscillonHook",
+            abi.encode(manager, address(this)),
+            address(flags)
+        );
+        hook = OscillonHook(payable(address(flags)));
+
+        hook.approveAdapter(address(adapter18));
+        hook.approveAdapter(address(adapter6));
+
+        Currency c0 = Currency.wrap(address(stable18));
+        Currency c1 = Currency.wrap(address(stable6));
+        bool stable18IsCurrency0 = Currency.unwrap(c0) < Currency.unwrap(c1);
+        if (!stable18IsCurrency0) (c0, c1) = (c1, c0);
+
+        // Correct initial price for a dollar-neutral pool across a 12-decimal
+        // gap: raw ratio (currency1/currency0) must be 10^-12 when the
+        // 18-decimal token is currency0, or 10^12 when it's currency1 — NOT
+        // SQRT_PRICE_1_1, which is only correct when both decimals match.
+        uint160 sqrtPriceX96 = stable18IsCurrency0
+            ? uint160(uint256(SQRT_PRICE_1_1) / 1_000_000) // sqrt(1e-12) = 1e-6
+            : uint160(uint256(SQRT_PRICE_1_1) * 1_000_000); // sqrt(1e12) = 1e6
+
+        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+        (poolKey, ) = initPool(
+            c0,
+            c1,
+            IHooks(address(hook)),
+            LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            int24(1),
+            sqrtPriceX96
+        );
+        poolId = PoolId.unwrap(poolKey.toId());
+
+        modifyLiquidityRouter.modifyLiquidity(
+            poolKey,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: tick - 120,
+                tickUpper: tick + 120,
+                liquidityDelta: 1e12,
+                salt: bytes32(0)
+            }),
+            ZERO_BYTES
+        );
+
+        address oForC0 = stable18IsCurrency0 ? address(adapter18) : address(adapter6);
+        address oForC1 = stable18IsCurrency0 ? address(adapter6) : address(adapter18);
+        uint8 decForC0 = stable18IsCurrency0 ? 18 : 6;
+        uint8 decForC1 = stable18IsCurrency0 ? 6 : 18;
+        sellStable6ZeroForOne = !stable18IsCurrency0;
+
+        (bool ok, ) = address(hook).call(
+            abi.encodeWithSignature(
+                "registerPool((address,address,uint24,int24,address),address,address,uint8,uint8)",
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks),
+                oForC0,
+                oForC1,
+                decForC0,
+                decForC1
+            )
+        );
+        require(ok, "registerPool failed");
+    }
+
+    // ── TWAP fallback on a mismatched-decimals pool must stay near par ──────
+
+    function test_twapFallback_decimalMismatchPool_reportsNearZeroDepeg() public {
+        // Force the stable6 (USDC-side) Chainlink adapter stale so pricing
+        // falls through to TWAP — this is exactly the path that was
+        // reporting a false ~100% depeg before the decimals fix.
+        vm.warp(block.timestamp + 2 hours);
+        oracle6.setUpdatedAt(1);
+
+        (bool ok, bytes memory data) = address(hook).staticcall(
+            abi.encodeWithSignature(
+                "getPoolState((address,address,uint24,int24,address))",
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks)
+            )
+        );
+        require(ok, "getPoolState failed");
+
+        (
+            ,
+            uint256 depegBps0,
+            ,
+            ,
+            uint256 depegBps1,
+            ,
+            ,
+            ,
+            ,
+            ,
+
+        ) = abi.decode(
+            data,
+            (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256, bool)
+        );
+
+        // Both near $1 — before the fix, the mismatched-decimals side would
+        // report ~10_000 bps (a false 100% depeg) instead of ~0.
+        assertLt(depegBps0, 50, "currency0 depeg should be near zero, not maxed out");
+        assertLt(depegBps1, 50, "currency1 depeg should be near zero, not maxed out");
     }
 }
