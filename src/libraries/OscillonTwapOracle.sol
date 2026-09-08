@@ -91,7 +91,20 @@ library OscillonTwapOracle {
         }
 
         uint32 nowTs = uint32(block.timestamp);
-        uint16 oldestIdx = card < C.OBS_CARDINALITY ? 0 : (newestIdx + 1) % C.OBS_CARDINALITY;
+        // Once card >= 2, index 0 is STILL the synthetic seed until the ring
+        // buffer actually wraps (card reaches OBS_CARDINALITY) — it doesn't
+        // get overwritten just because real writes exist elsewhere in the
+        // buffer. Measuring "how much real history exists" against the seed
+        // (registered long ago, fake zero cumulative) instead of the first
+        // REAL write (index 1) means this check can pass while genuine
+        // trading history is still far short of TWAP_WINDOW — e.g. a pool
+        // registered hours ago with exactly one real swap 2 minutes ago
+        // looks "warmed up" by the seed's age, then extrapolates from that
+        // single real point across the fake multi-hour gap, producing the
+        // same out-of-range-tick failure the card < 2 guard above was meant
+        // to prevent. Once wrapped, the seed has long been overwritten, so
+        // the original formula is already correct there.
+        uint16 oldestIdx = card < C.OBS_CARDINALITY ? 1 : (newestIdx + 1) % C.OBS_CARDINALITY;
         Observation memory oldest = state.observations[oldestIdx];
 
         if (nowTs - oldest.blockTimestamp < C.TWAP_WINDOW) {
@@ -116,10 +129,30 @@ library OscillonTwapOracle {
         uint32 nowTs
     ) private view returns (int24 avgTick) {
         Observation memory newest = state.observations[newestIdx];
+        uint32 target = nowTs - C.TWAP_WINDOW;
+
+        // Nothing has traded within the window at all — target (30 min ago)
+        // is NEWER than every stored observation, so there's no real data
+        // point to bracket it against. observeAt() has no case for this: it
+        // would just return the newest observation's raw cumulative as if
+        // it were recorded AT target, silently discarding the (potentially
+        // very large) gap between the last write and now. tickDelta then
+        // carries that entire real gap's worth of movement while dividing
+        // by only TWAP_WINDOW, inflating the result by roughly
+        // (real_gap / TWAP_WINDOW)x — producing an out-of-range tick for
+        // any pool that's registered but goes quiet for a while (confirmed
+        // via direct on-chain reproduction: ~4h since last write, TWAP_WINDOW
+        // = 30 min, inflated the tick ~8x past valid bounds).
+        //
+        // Correct answer when nothing has moved in the window: the average
+        // IS the tick that's been sitting there the whole time, unchanged.
+        if (newest.blockTimestamp <= target) {
+            return currentTick;
+        }
+
         int56 cumNow = newest.tickCumulative
             + int56(currentTick) * int56(uint56(nowTs - newest.blockTimestamp));
 
-        uint32 target = nowTs - C.TWAP_WINDOW;
         int56 cumAtTarget = observeAt(state, target, card, newestIdx);
 
         int56 tickDelta = cumNow - cumAtTarget;

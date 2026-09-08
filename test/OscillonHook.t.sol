@@ -870,6 +870,7 @@ contract OscillonHookDecimalMismatchTest is Test, Deployers {
     PoolKey poolKey;
     bytes32 poolId;
     bool sellStable6ZeroForOne;
+    int24 centerTick;
 
     function setUp() public {
         deployFreshManagerAndRouters();
@@ -925,7 +926,7 @@ contract OscillonHookDecimalMismatchTest is Test, Deployers {
             ? uint160(uint256(SQRT_PRICE_1_1) / 1_000_000) // sqrt(1e-12) = 1e-6
             : uint160(uint256(SQRT_PRICE_1_1) * 1_000_000); // sqrt(1e12) = 1e6
 
-        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
+        centerTick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         (poolKey, ) = initPool(
             c0,
             c1,
@@ -939,8 +940,8 @@ contract OscillonHookDecimalMismatchTest is Test, Deployers {
         modifyLiquidityRouter.modifyLiquidity(
             poolKey,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: tick - 120,
-                tickUpper: tick + 120,
+                tickLower: centerTick - 120,
+                tickUpper: centerTick + 120,
                 liquidityDelta: 1e12,
                 salt: bytes32(0)
             }),
@@ -1012,5 +1013,140 @@ contract OscillonHookDecimalMismatchTest is Test, Deployers {
         // report ~10_000 bps (a false 100% depeg) instead of ~0.
         assertLt(depegBps0, 50, "currency0 depeg should be near zero, not maxed out");
         assertLt(depegBps1, 50, "currency1 depeg should be near zero, not maxed out");
+    }
+
+    // ── Seed ages for hours, then ONE real swap → still not "warmed up" ─────
+
+    function test_sparseHistory_notFalselyWarmedUp_afterSeedAges() public {
+        // Let the seed age well past TWAP_WINDOW with zero real trading —
+        // matches the deployed USDe/USDC pool: registered hours ago, mostly
+        // untraded.
+        vm.warp(block.timestamp + 3 hours);
+
+        // One real (tiny) swap: obsCardinality goes 1 -> 2. Only a few
+        // seconds of REAL history exist even though the seed itself is now
+        // hours old. Deliberately small — this fixture seeds liquidity with
+        // the same flat constant the real deploy script used before its own
+        // depth fix, so AMOUNT_IN-sized swaps would blow through the thin
+        // range entirely; that's a different (already-fixed elsewhere)
+        // problem this test isn't about.
+        _swap(int256(-int256(1e6)));
+
+        (bool ok, bytes memory data) = address(hook).staticcall(
+            abi.encodeWithSignature(
+                "getPoolState((address,address,uint24,int24,address))",
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks)
+            )
+        );
+        require(ok, "getPoolState failed");
+
+        (, , , , , , , , , , bool twapWarmedUp) = abi.decode(
+            data,
+            (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256, bool)
+        );
+
+        // Before this fix: the "warmed up" gate measured elapsed time
+        // against the SEED (index 0), which is always hours old here
+        // regardless of real trading — so this would pass as "warmed up"
+        // off a single real data point, extrapolate across the fake gap,
+        // and revert with TickMath.InvalidTick for a pool whose real tick
+        // sits far from 0 (exactly what happened on the deployed
+        // USDe/USDC pool). Must NOT be warmed up — only seconds of genuine
+        // history exist, regardless of how old the seed is.
+        assertFalse(twapWarmedUp, "must not be warmed up from seed age alone");
+    }
+
+    // ── Real history exists but pool goes quiet → avg must equal spot ───────
+
+    function test_quietPool_afterRealHistory_avgTickEqualsCurrentNotExtrapolated() public {
+        // write() dedupes same-second observations by design (see
+        // test_afterSwap_dedupesSameSecondWrites) — advance a second first
+        // so this swap actually registers as a distinct real observation
+        // (card 1 -> 2) instead of being folded into the seed.
+        vm.warp(block.timestamp + 1);
+        _swap(int256(-int256(1e6)));
+
+        // Then total silence for well over TWAP_WINDOW (30 min). `target`
+        // (30 min before this call) ends up NEWER than the last real write,
+        // since nothing has happened since. Before this fix, observeAt()
+        // silently treated the last write's cumulative as if it were AT
+        // target, discarding the full ~4h gap and inflating the resulting
+        // average by roughly (gap / TWAP_WINDOW)x — enough to blow past
+        // TickMath's +-887272 bound for this pool's real ~-276323 tick,
+        // exactly reproducing the deployed USDe/USDT pool's InvalidTick
+        // failure after real trading followed by an idle period.
+        vm.warp(block.timestamp + 4 hours);
+
+        (bool ok, bytes memory data) = address(hook).staticcall(
+            abi.encodeWithSignature(
+                "getPoolState((address,address,uint24,int24,address))",
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks)
+            )
+        );
+        require(ok, "getPoolState failed");
+
+        (
+            ,
+            uint256 depegBps0,
+            ,
+            ,
+            uint256 depegBps1,
+            ,
+            ,
+            ,
+            ,
+            ,
+            bool twapWarmedUp
+        ) = abi.decode(
+            data,
+            (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256, bool)
+        );
+
+        // Real history exists (one write, long enough ago) so this IS
+        // warmed up — the average is well-defined, it just has to be
+        // correct: a quiet pool's TWAP is its unchanged spot price, not a
+        // garbage extrapolation, so depeg must stay near par.
+        assertTrue(twapWarmedUp, "genuine history exists, should be warmed up");
+        // Threshold is generous (not near-zero) because the seeding swap
+        // itself causes a small real price impact against this pool's thin
+        // test liquidity — that's expected. What this rules out is the
+        // actual bug: before the fix this was off by ~8x in TICK space,
+        // i.e. many thousands of bps, not a few tens.
+        assertLt(depegBps0, 500, "quiet pool's avg must equal current price, not extrapolated garbage");
+        assertLt(depegBps1, 500, "quiet pool's avg must equal current price, not extrapolated garbage");
+    }
+
+    function _swap(int256 amountSpecified) internal {
+        // A global MIN/MAX price limit would blow straight through this
+        // pool's thin seeded range (this fixture still uses the old flat
+        // 1e12 liquidity constant) and slam the price to the edge of valid
+        // tick space. Stay within a couple ticks of the real center instead
+        // — plenty for triggering one real TWAP write, which is all this
+        // helper is used for.
+        uint160 sqrtPriceLimitX96 = sellStable6ZeroForOne
+            ? TickMath.getSqrtPriceAtTick(centerTick - 60)
+            : TickMath.getSqrtPriceAtTick(centerTick + 60);
+
+        swapRouter.swap(
+            poolKey,
+            IPoolManager.SwapParams({
+                zeroForOne: sellStable6ZeroForOne,
+                amountSpecified: amountSpecified,
+                sqrtPriceLimitX96: sqrtPriceLimitX96
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ""
+        );
     }
 }
