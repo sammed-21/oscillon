@@ -24,6 +24,7 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/libraries/LPFeeLibrary.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
 import {MockV3Aggregator} from "./mock/MockV3Aggregator.sol";
 import {OscillonHook} from "../src/OscillonHook.sol";
@@ -34,6 +35,7 @@ import {OscillonConstants as C} from "../src/constants/OscillonConstants.sol";
 
 contract OscillonHookTwapTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
+    using StateLibrary for IPoolManager;
 
     uint16 constant OBS_CARDINALITY = 144;
     uint32 constant TWAP_WINDOW = 1800;
@@ -204,6 +206,57 @@ contract OscillonHookTwapTest is Test, Deployers {
             "second same-second swap must not add obs"
         );
         assertEq(_obsIndex(), idxAfterFirst, "newest index must not advance");
+    }
+
+    // ── Observation records the pre-swap tick, not the post-swap tick ───────
+    //
+    // Regression test for Fix 1: _afterSwap must write the interval using
+    // the tick captured in _beforeSwap (the tick that was actually active
+    // for the whole elapsed interval), not a fresh getSlot0() read after
+    // the swap has already moved price. A swap that shifts price a lot in
+    // one block should NOT get to backdate that new tick across the
+    // interval that just elapsed — only the NEXT interval should reflect it.
+    function test_afterSwap_recordsPreSwapTick() public {
+        uint16 idxBefore = _obsIndex();
+        (uint32 prevTs, int56 prevCum, ) = _observationAt(idxBefore);
+
+        vm.warp(block.timestamp + 100);
+        (, int24 preTick, , ) = manager.getSlot0(poolKey.toId());
+
+        // Big drain swap — moves price meaningfully within the fixture's
+        // narrow [-120, 120] liquidity range.
+        oracle0.updateAnswer(int256(1e18));
+        oracle1.updateAnswer(int256(1e18));
+        swapRouter.swap(
+            poolKey,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -int256(5e16),
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ""
+        );
+
+        (, int24 postTick, , ) = manager.getSlot0(poolKey.toId());
+        assertTrue(postTick != preTick, "swap must actually move the tick");
+
+        uint16 idxAfter = _obsIndex();
+        assertEq(idxAfter, idxBefore + 1, "swap must append a new observation");
+        (uint32 newTs, int56 newCum, ) = _observationAt(idxAfter);
+
+        int256 avgTickOfElapsedInterval = (int256(newCum) - int256(prevCum)) /
+            int256(uint256(newTs - prevTs));
+
+        assertEq(
+            avgTickOfElapsedInterval,
+            int256(preTick),
+            "recorded interval must average to the PRE-swap tick"
+        );
+        assertTrue(
+            avgTickOfElapsedInterval != int256(postTick),
+            "recorded interval must NOT reflect the POST-swap tick"
+        );
     }
 
     // ── Buffer spans the TWAP window after enough activity ───────────────────
@@ -378,6 +431,7 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
     uint24 constant BASE_FEE = 300;
     uint24 constant FEE_AT_6_BPS_DRAIN = 400; // 3 bps base + 1 bps surcharge
     uint24 constant FEE_AT_20_BPS = 900; // 3 bps base + 6 bps surcharge
+    uint24 constant FEE_AT_15_BPS_DRAIN = 600; // 3 bps base + 3 bps hybrid surcharge
     uint256 constant AMOUNT_IN = 1e15;
 
     MockERC20 stable0;
@@ -490,6 +544,51 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
+    // ── Healthy Chainlink + thin TWAP → base fee, not the hardened max fee ──
+    //
+    // Regression test for the usingFallback-gating fix in _beforeSwap: TWAP
+    // trust must only affect pricing when the TWAP is actually the price in
+    // use. Right after registerPool this pool's TWAP has only the synthetic
+    // seed observation (cardinality 1, far under MIN_TWAP_OBSERVATIONS), so
+    // trustLevel() reports UNTRUSTED — but Chainlink is fresh here, so
+    // usingFallback is false and that untrusted TWAP must not touch the fee.
+    function test_healthyChainlink_thinTwap_doesNotMaxFee() public {
+        assertLt(
+            _obsCardinality(),
+            C.MIN_TWAP_OBSERVATIONS,
+            "precondition: TWAP must be thin (only the seed observation)"
+        );
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, false, false, sellStable1ZeroForOne);
+        _swap(int256(-int256(AMOUNT_IN)));
+    }
+
+    function _obsCardinality() internal view returns (uint16) {
+        (bool ok, bytes memory data) = address(hook).staticcall(
+            abi.encodeWithSignature("obsCardinality(bytes32)", poolId)
+        );
+        require(ok, "obsCardinality call failed");
+        return abi.decode(data, (uint16));
+    }
+
+    // ── Quiet feed, last print at peg → base fee, not TWAP, not max ─────────
+    //
+    // Regression test for the heartbeat-aligned MAX_ORACLE_AGE fix: under
+    // the old flat 1h window, 8 hours of silence (normal behavior for a
+    // healthy USDC/USDT-class feed that only pushes on heartbeat or
+    // deviation) would have been misclassified as stale, sending this swap
+    // through the TWAP fallback for no real reason. Under the new
+    // heartbeat-aligned window (24h + 1h buffer = 25h), 8h is well within
+    // range — Chainlink's last print is used as-is.
+    function test_quietFeed_lastPrintAtPeg_baseFee() public {
+        vm.warp(block.timestamp + 8 hours);
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, false, false, sellStable1ZeroForOne); // usingFallback = false: Chainlink still usable
+        _swap(int256(-int256(AMOUNT_IN)));
+    }
+
     // ── Small drain depeg → hybrid fee (1 bps at 6 bps deviation) ────────────
 
     function test_swap_SmallDepegDrain_AppliesBasePlusSurcharge() public {
@@ -531,6 +630,26 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
+    // ── Fresh Chainlink print off-peg → drain surcharge sized from it ───────
+    //
+    // 15 bps, not the originally-specified 100 bps: at 100 bps, this
+    // fixture's untouched pool (TWAP/spot pinned at exactly $1) trips the
+    // existing 20 bps Chainlink-vs-TWAP disagreement guard in
+    // OscillonPriceEngine (out of scope for this change, unchanged) before
+    // the print ever reaches the surcharge logic — conservativePrice picks
+    // TWAP's $1 over Chainlink's real reading, giving depegBps=0/BASE_FEE
+    // instead of a surcharge. 15 bps clears that guard (threshold is a
+    // strict >20) so this test actually exercises "usable Chainlink print
+    // off peg -> surcharge sized from it," which is the point.
+    function test_printedDepeg_surcharge() public {
+        oracle1.updateAnswer(int256(0.9985e18));
+        vm.warp(block.timestamp + 10 minutes);
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit DepegDetected(poolId, 15, FEE_AT_15_BPS_DRAIN, AMOUNT_IN, true, false, false, sellStable1ZeroForOne);
+        _swap(int256(-int256(AMOUNT_IN)));
+    }
+
     // ── Disagreement guard: |CL − TWAP| > 20 bps → conservative wins ────────
 
     function test_disagreementGuard_LargeMismatch_UsesConservative() public {
@@ -543,25 +662,76 @@ contract OscillonHookDepegFeeTest is Test, Deployers {
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
-    // ── Chainlink stale → falls back to TWAP (usingFallback = true) ─────────
+    // ── No usable Chainlink → base fee + unconditional size cap ─────────────
+    //
+    // Policy: when Chainlink has no usable print (stale past its heartbeat,
+    // floor/ceiling clamp, bad round, or any adapter revert), the pool's own
+    // TWAP is never treated as the $1 reference for pricing — trusted or
+    // not. Base fee applies (not MAX_FEE_PIPS), and the size cap — not the
+    // fee — is the actual protection.
 
-    function test_chainlinkStale_FallsBackToTWAP() public {
+    function test_noOracle_thinTwap_basePlusCap_notMaxFee() public {
         // Even with a huge oracle deviation, Chainlink should be IGNORED once
-        // it goes stale (>25h since updatedAt) — the catch path uses TWAP,
-        // which equals spot ($1) here, so depegBps = 0, fee = BASE_FEE.
+        // it goes stale past its heartbeat-aligned maxAge (25h) — the catch
+        // path falls through to TWAP for the *price* (OscillonPriceEngine is
+        // unchanged), but the hook must not use that TWAP price for fee
+        // purposes, trusted or not.
         oracle1.updateAnswer(int256(0.95e18));
 
-        // Warp past MAX_ORACLE_AGE (1h) so the staleness check trips. Only
+        // Warp past MAX_ORACLE_AGE (25h) so the staleness check trips. Only
         // the synthetic seed observation exists at this point (no swap has
         // happened yet) — readTwapOrSpot correctly refuses to treat that as
         // "warmed up" regardless of elapsed time, since there's no real
         // trading history to average over yet (see OscillonTwapOracle: card
-        // < 2 guard). It falls back to spot, which equals $1 here.
-        vm.warp(block.timestamp + 2 hours);
+        // < 2 guard).
+        vm.warp(block.timestamp + 26 hours);
         oracle1.setUpdatedAt(1); // belt-and-braces: force updatedAt firmly stale.
 
+        // Base fee, not MAX_FEE_PIPS — no usable Chainlink means no basis to
+        // size a surcharge, but it does NOT mean "charge the max instead."
         vm.expectEmit(true, false, false, true, address(hook));
         emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true, false, sellStable1ZeroForOne); // usingFallback = true, twapWarmedUp = false
+        _swap(int256(-int256(AMOUNT_IN)));
+
+        // The size cap is what actually bounds exposure in this state: a
+        // swap bigger than cap = min(maxDepegSwap, liquidity * 50 / 10_000)
+        // must still revert even though depegBps reads as 0 (isDrain=false)
+        // — the cap applies unconditionally here, not gated on depegBps.
+        bytes4 capSelector = bytes4(keccak256("SwapCapExceeded()"));
+        bool reverted;
+        try this._swapExternal(int256(-int256(1e16))) {
+            // unreachable — 1e16 exceeds the ~5e15 cap from this fixture's liquidity
+        } catch (bytes memory data) {
+            reverted = true;
+            bool found;
+            for (uint256 i = 0; i + 4 <= data.length; i++) {
+                if (
+                    data[i] == capSelector[0] &&
+                    data[i + 1] == capSelector[1] &&
+                    data[i + 2] == capSelector[2] &&
+                    data[i + 3] == capSelector[3]
+                ) {
+                    found = true;
+                    break;
+                }
+            }
+            assertTrue(found, "expected inner SwapCapExceeded");
+        }
+        assertTrue(reverted, "oversized swap must be capped with no usable Chainlink");
+    }
+
+    // ── Past heartbeat, even if the frozen print looks in-band → unusable ───
+    //
+    // Regression test for the frozen-at-peg hole: an in-band answer must
+    // NOT be trusted just because it looks reasonable once its age exceeds
+    // maxAge. Fee must be BASE_FEE_PIPS (cap ON), not something "dynamic"
+    // derived from the stale 0.999 print, and not the TWAP treated as $1.
+    function test_pastHeartbeat_evenIfInBand_noUsdFromChainlink() public {
+        oracle1.updateAnswer(int256(0.999e18)); // in-band: within [0.995, 1.005]
+        vm.warp(block.timestamp + 26 hours); // past the 25h heartbeat-aligned maxAge
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true, false, sellStable1ZeroForOne); // usingFallback = true: Chainlink unusable despite in-band value
         _swap(int256(-int256(AMOUNT_IN)));
     }
 
@@ -809,6 +979,10 @@ contract OscillonHookAnswerBoundTest is Test, Deployers {
         // updatedAt is fresh (not stale) — only the minAnswer circuit
         // breaker in ChainlinkOracleAdapter can catch this; staleness alone
         // would not, since the aggregator keeps "updating" at its clamp.
+        //
+        // Policy: a floor/ceiling clamp is "no usable Chainlink," same as
+        // stale-past-heartbeat or a bad round — base fee applies (cap ON),
+        // not MAX_FEE_PIPS, and the pool's own TWAP is never treated as $1.
         vm.expectEmit(true, false, false, true, address(hook));
         emit DepegDetected(poolId, 0, BASE_FEE, AMOUNT_IN, false, true, false, sellStable1ZeroForOne); // usingFallback = true, twapWarmedUp = false
         _swap(int256(-int256(AMOUNT_IN)));
@@ -976,8 +1150,13 @@ contract OscillonHookDecimalMismatchTest is Test, Deployers {
     function test_twapFallback_decimalMismatchPool_reportsNearZeroDepeg() public {
         // Force the stable6 (USDC-side) Chainlink adapter stale so pricing
         // falls through to TWAP — this is exactly the path that was
-        // reporting a false ~100% depeg before the decimals fix.
-        vm.warp(block.timestamp + 2 hours);
+        // reporting a false ~100% depeg before the decimals fix. Must clear
+        // the heartbeat-aligned MAX_ORACLE_AGE (25h), not the old flat 1h —
+        // otherwise this "force stale" no longer actually triggers the
+        // fallback path this test exists to exercise (it would still
+        // coincidentally pass on a healthy Chainlink read of the same $1
+        // price, silently testing nothing).
+        vm.warp(block.timestamp + 26 hours);
         oracle6.setUpdatedAt(1);
 
         (bool ok, bytes memory data) = address(hook).staticcall(
@@ -996,10 +1175,10 @@ contract OscillonHookDecimalMismatchTest is Test, Deployers {
             ,
             uint256 depegBps0,
             ,
-            ,
+            bool usingFallback0,
             uint256 depegBps1,
             ,
-            ,
+            bool usingFallback1,
             ,
             ,
             ,
@@ -1007,6 +1186,15 @@ contract OscillonHookDecimalMismatchTest is Test, Deployers {
         ) = abi.decode(
             data,
             (bool, uint256, bool, bool, uint256, bool, bool, bool, uint256, uint256, bool)
+        );
+
+        // Confirm the fallback path was actually exercised on the stale
+        // side — otherwise the depegBps assertions below would pass
+        // trivially off a healthy Chainlink read instead of proving
+        // anything about the TWAP-fallback decimals fix.
+        assertTrue(
+            usingFallback0 || usingFallback1,
+            "stable6 side must actually be pricing via TWAP fallback"
         );
 
         // Both near $1 — before the fix, the mismatched-decimals side would

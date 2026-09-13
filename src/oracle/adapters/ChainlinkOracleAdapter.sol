@@ -110,6 +110,12 @@ contract ChainlinkOracleAdapter is IOscillonOracle {
         if (answer <= 0) revert OracleAnswerInvalid();
         if (answeredInRound < roundId)
             revert OracleRoundIncomplete(roundId, answeredInRound);
+        // maxAge is heartbeat-aligned (see C.MAX_ORACLE_AGE), so silence
+        // inside it is the feed behaving normally, not staleness — the
+        // answer is used as-is once the checks below pass, regardless of
+        // its value. Deliberately no "answer looks reasonable, so skip the
+        // age check" shortcut: a feed frozen near $1 for longer than its
+        // own heartbeat is exactly the failure this check exists to catch.
         if (block.timestamp > updatedAt + maxAge)
             revert OracleStale(updatedAt, block.timestamp);
 

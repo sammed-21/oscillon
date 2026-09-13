@@ -7,7 +7,7 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
-import {Observation, TwapState} from "../types/OscillonTypes.sol";
+import {Observation, TwapState, TwapTrust} from "../types/OscillonTypes.sol";
 import {OscillonConstants as C} from "../constants/OscillonConstants.sol";
 
 library OscillonTwapOracle {
@@ -160,6 +160,70 @@ library OscillonTwapOracle {
         if (tickDelta < 0 && (tickDelta % int56(uint56(C.TWAP_WINDOW)) != 0)) {
             avgTick--;
         }
+    }
+
+    /// @notice How much this pool's own TWAP should be trusted as a real
+    ///         price right now — independent of whether the primary oracle
+    ///         succeeded, since the disagreement guard only helps while the
+    ///         primary IS available. Two dimensions, both must pass:
+    ///           1. enough real observations that a single trade can't
+    ///              dominate the windowed average (see readTwapOrSpot's own
+    ///              card < 2 / quiet-pool guards for the narrower cases this
+    ///              extends — those prevent nonsense math, this prevents
+    ///              trusting *valid* math built from too little real data)
+    ///           2. enough token depth within a narrow band of the current
+    ///              price that a single max-sized swap couldn't have walked
+    ///              it there cheaply
+    function trustLevel(
+        IPoolManager poolManager,
+        PoolKey calldata key,
+        TwapState storage state,
+        uint128 liquidity,
+        bool tokenInIsToken0,
+        uint256 maxAbsolute
+    ) internal view returns (TwapTrust) {
+        if (state.obsCardinality < C.MIN_TWAP_OBSERVATIONS) {
+            return TwapTrust.UNTRUSTED;
+        }
+
+        PoolId poolId = key.toId();
+        (uint160 sqrtPriceX96, int24 tick, , ) = poolManager.getSlot0(poolId);
+        uint160 sqrtLower = TickMath.getSqrtPriceAtTick(tick - C.TRUST_CHECK_TICK_BAND);
+        uint160 sqrtUpper = TickMath.getSqrtPriceAtTick(tick + C.TRUST_CHECK_TICK_BAND);
+
+        uint256 nearbyDepth = tokenInIsToken0
+            ? _amount0ForLiquidity(sqrtPriceX96, sqrtUpper, liquidity)
+            : _amount1ForLiquidity(sqrtLower, sqrtPriceX96, liquidity);
+
+        uint256 minDepth = (maxAbsolute * C.MIN_NEARBY_DEPTH_BPS) / 10_000;
+        if (nearbyDepth < minDepth) {
+            return TwapTrust.UNTRUSTED;
+        }
+
+        return TwapTrust.TRUSTED;
+    }
+
+    /// @dev Inverse of LiquidityAmounts.getLiquidityForAmount0 — how much
+    ///      token0 sits between the current price and an upper bound, given
+    ///      liquidity. Implemented locally (same FullMath/Q96 convention
+    ///      already used throughout this file) rather than importing the
+    ///      periphery library just for its missing reverse direction.
+    function _amount0ForLiquidity(
+        uint160 sqrtPriceX96,
+        uint160 sqrtPriceUpperX96,
+        uint128 liquidity
+    ) private pure returns (uint256) {
+        uint256 intermediate = FullMath.mulDiv(sqrtPriceX96, sqrtPriceUpperX96, 1 << 96);
+        return FullMath.mulDiv(liquidity, sqrtPriceUpperX96 - sqrtPriceX96, intermediate);
+    }
+
+    /// @dev Inverse of LiquidityAmounts.getLiquidityForAmount1.
+    function _amount1ForLiquidity(
+        uint160 sqrtPriceLowerX96,
+        uint160 sqrtPriceX96,
+        uint128 liquidity
+    ) private pure returns (uint256) {
+        return FullMath.mulDiv(liquidity, sqrtPriceX96 - sqrtPriceLowerX96, 1 << 96);
     }
 
     function observeAt(TwapState storage state, uint32 target, uint16 card, uint16 newestIdx)

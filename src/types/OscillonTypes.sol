@@ -36,6 +36,19 @@ struct TwapState {
     uint16 obsCardinality;
 }
 
+/// @notice How much a pool's own TWAP should be trusted as a real price
+///         right now, independent of whether the primary oracle succeeded.
+///         UNTRUSTED = too few real observations to resist single-actor
+///         domination of the windowed average, or too little liquidity
+///         sitting near the current price for it to be expensive to move.
+///         DEGRADED is reserved for a narrower future distinction and
+///         currently behaves like TRUSTED — only UNTRUSTED changes pricing.
+enum TwapTrust {
+    TRUSTED,
+    DEGRADED,
+    UNTRUSTED
+}
+
 struct SwapContext {
     uint256 depegBps;
     bool isDrain;
@@ -45,6 +58,7 @@ struct SwapContext {
     uint256 swapSize;
     bool tokenInIsToken0;
     bool twapWarmedUp;
+    TwapTrust twapTrust;
 }
 
 /// @notice Oracle source for the final price (1=Chainlink, 2=TWAP)
