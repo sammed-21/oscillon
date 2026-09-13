@@ -25,7 +25,8 @@ import {
     Observation,
     TwapState,
     PriceResult,
-    PoolOracleSnapshot
+    PoolOracleSnapshot,
+    TwapTrust
 } from "./types/OscillonTypes.sol";
 import {
     NotOwner,
@@ -91,6 +92,12 @@ contract OscillonHook is BaseHook {
     mapping(PoolId => TwapState) internal twapStates;
     mapping(PoolId => uint256) public rollingDrain;
     mapping(PoolId => uint256) public rollingWindowStart;
+    // Set in _beforeSwap (before the swap executes), read in the matching
+    // _afterSwap — TWAP history must be written against the tick that was
+    // active during the preceding interval, not the tick this swap is about
+    // to produce. Always freshly set immediately before its paired
+    // _afterSwap runs; v4's lock prevents nested swaps from interleaving.
+    mapping(PoolId => int24) private _preSwapTick;
 
     constructor(
         IPoolManager _poolManager,
@@ -236,24 +243,41 @@ contract OscillonHook is BaseHook {
             );
         }
 
-        SwapContext memory ctx = _buildSwapContext(key, cfg, params);
+        // Captured here — before the swap executes — so the matching
+        // _afterSwap can record TWAP history against the tick that was
+        // actually active during the preceding interval, not the tick this
+        // same swap is about to produce (see OscillonTwapOracle.write()).
+        (, int24 preSwapTick, , ) = poolManager.getSlot0(poolId);
+        _preSwapTick[poolId] = preSwapTick;
+
+        uint128 liquidity = poolManager.getLiquidity(poolId);
+        SwapContext memory ctx = _buildSwapContext(key, cfg, params, liquidity);
 
         if (params.amountSpecified > 0 && ctx.depegBps >= C.SMALL_DEPEG_BPS) {
             revert ExactOutputDisabledDuringDepeg(ctx.depegBps);
         }
 
-        uint128 liquidity = poolManager.getLiquidity(poolId);
         uint256 maxAbsolute = ctx.tokenInIsToken0
             ? cfg.maxDepegSwap0
             : cfg.maxDepegSwap1;
         uint256 cap = _min(maxAbsolute, (uint256(liquidity) * 50) / 10_000);
-        if (
-            ctx.isDrain &&
-            ctx.depegBps >= C.CAP_DEPEG_BPS &&
-            ctx.swapSize > cap
-        ) revert SwapCapExceeded();
 
-        uint24 fee = _selectFee(poolId, cfg, ctx);
+        // No usable Chainlink print for this token (stale past its
+        // heartbeat, floor/ceiling clamp, incomplete round, or any other
+        // adapter revert) → OscillonPriceEngine fell through to the pool's
+        // own TWAP and ctx.usingFallback is true. Per policy, that TWAP
+        // reading is never treated as the $1 reference for pricing
+        // purposes — trusted or not. Base fee applies, and the size cap is
+        // the actual protection here rather than a fee penalty: with no
+        // usable price we have no basis to size a surcharge off depegBps,
+        // but we can still bound exposure. Skips _selectFee's side effects
+        // too (lastHighDepegAt, rolling drain, surplus accrual) since those
+        // are just as derived from a price we have no usable source for.
+        bool noUsableChainlink = ctx.usingFallback;
+        bool capApplies = noUsableChainlink || (ctx.isDrain && ctx.depegBps >= C.CAP_DEPEG_BPS);
+        if (capApplies && ctx.swapSize > cap) revert SwapCapExceeded();
+
+        uint24 fee = noUsableChainlink ? C.BASE_FEE_PIPS : _selectFee(poolId, cfg, ctx);
 
         emit DepegDetected(
             poolId,
@@ -292,8 +316,14 @@ contract OscillonHook is BaseHook {
     ) internal override returns (bytes4, int128) {
         PoolId poolId = key.toId();
         if (poolConfigs[poolId].registered) {
-            (, int24 currentTick, , ) = poolManager.getSlot0(poolId);
-            OscillonTwapOracle.write(twapStates[poolId], currentTick);
+            // Use the tick captured in _beforeSwap (before this swap moved
+            // it), not a fresh getSlot0() read here — reading now would
+            // return the POST-swap tick, letting this swap's own price
+            // impact backdate itself across the entire interval since the
+            // last observation instead of only counting from this point
+            // forward. Matches Uniswap v3's own convention for exactly this
+            // manipulation-resistance reason.
+            OscillonTwapOracle.write(twapStates[poolId], _preSwapTick[poolId]);
         }
         return (this.afterSwap.selector, int128(0));
     }
@@ -303,7 +333,8 @@ contract OscillonHook is BaseHook {
     function _buildSwapContext(
         PoolKey calldata key,
         PoolConfig storage cfg,
-        SwapParams calldata params
+        SwapParams calldata params,
+        uint128 liquidity
     ) internal view returns (SwapContext memory ctx) {
         bool tokenInIsToken0 = params.zeroForOne;
         address tokenIn = tokenInIsToken0 ? cfg.token0 : cfg.token1;
@@ -330,6 +361,8 @@ contract OscillonHook is BaseHook {
             twapPrice
         );
 
+        TwapTrust twapTrust = _computeTwapTrust(key, cfg, tokenInIsToken0, liquidity);
+
         uint256 swapSize = params.amountSpecified < 0
             ? uint256(-params.amountSpecified)
             : uint256(params.amountSpecified);
@@ -342,8 +375,28 @@ contract OscillonHook is BaseHook {
             amountSpecified: params.amountSpecified,
             swapSize: swapSize,
             tokenInIsToken0: tokenInIsToken0,
-            twapWarmedUp: twapWarmedUp
+            twapWarmedUp: twapWarmedUp,
+            twapTrust: twapTrust
         });
+    }
+
+    // Split out of _buildSwapContext to keep that function's live variable
+    // count under the stack-too-deep limit (legacy codegen, no --via-ir).
+    function _computeTwapTrust(
+        PoolKey calldata key,
+        PoolConfig storage cfg,
+        bool tokenInIsToken0,
+        uint128 liquidity
+    ) private view returns (TwapTrust) {
+        uint256 maxAbsolute = tokenInIsToken0 ? cfg.maxDepegSwap0 : cfg.maxDepegSwap1;
+        return OscillonTwapOracle.trustLevel(
+            poolManager,
+            key,
+            twapStates[key.toId()],
+            liquidity,
+            tokenInIsToken0,
+            maxAbsolute
+        );
     }
 
     function _selectFee(
